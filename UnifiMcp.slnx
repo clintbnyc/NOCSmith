@@ -1,0 +1,4 @@
+<Solution>
+  <Project Path="src/UnifiMcp/UnifiMcp.csproj" />
+  <Project Path="tests/UnifiMcp.Tests/UnifiMcp.Tests.csproj" />
+</Solution>

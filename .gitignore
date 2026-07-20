@@ -1,0 +1,10 @@
+bin/
+obj/
+TestResults/
+.DS_Store
+.env.op
+.env
+.dotnet-home/
+.nuget/
+*.user
+*.suo
