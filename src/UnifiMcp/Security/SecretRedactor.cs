@@ -37,6 +37,8 @@ public sealed partial class SecretRedactor
 
         result = BearerPattern().Replace(result, "$1" + Redacted);
         result = ApiKeyPattern().Replace(result, "$1" + Redacted);
+        result = InlineSecretAssignmentPattern().Replace(result, "$1" + Redacted);
+        result = PrivateKeyBlockPattern().Replace(result, Redacted);
         return result;
     }
 
@@ -106,4 +108,10 @@ public sealed partial class SecretRedactor
 
     [GeneratedRegex("(?i)(x-api-key[=:]\\s*)[^\\s,;]+")]
     private static partial Regex ApiKeyPattern();
+
+    [GeneratedRegex("(?i)(\\b(?:password|passwd|passphrase|api[-_ ]?key|token|secret|psk|pre[-_ ]?shared[-_ ]?key)\\b[\"']?\\s*[:=]\\s*)(?:\"[^\"]*\"|'[^']*'|[^\\s,;]+)")]
+    private static partial Regex InlineSecretAssignmentPattern();
+
+    [GeneratedRegex("-----BEGIN [^-\\r\\n]*PRIVATE KEY-----[\\s\\S]*?-----END [^-\\r\\n]*PRIVATE KEY-----", RegexOptions.IgnoreCase | RegexOptions.CultureInvariant)]
+    private static partial Regex PrivateKeyBlockPattern();
 }

@@ -119,6 +119,59 @@ public sealed class UnifiClientTests
         Assert.Contains("redacted", exception.Message, StringComparison.Ordinal);
     }
 
+    [Fact]
+    public async Task Error_preserves_machine_readable_unifi_code()
+    {
+        var handler = new RecordingHandler(_ =>
+            JsonResponse(
+                HttpStatusCode.BadRequest,
+                "{\"code\":\"api.firewall.zone-based-firewall-not-configured\",\"message\":\"not configured\"}"));
+        using var client = CreateClient(handler);
+
+        var exception = await Assert.ThrowsAsync<UnifiApiException>(() =>
+            client.ReadAsync(SiteRequest("getFirewallPolicies"), CancellationToken.None));
+
+        Assert.Equal(HttpStatusCode.BadRequest, exception.StatusCode);
+        Assert.Equal("api.firewall.zone-based-firewall-not-configured", exception.Code);
+    }
+
+    [Fact]
+    public async Task Legacy_reads_are_fixed_gets_under_the_network_proxy()
+    {
+        var handler = new RecordingHandler(_ => JsonResponse(HttpStatusCode.OK, "{\"data\":[]}"));
+        using var client = CreateClient(handler);
+
+        await client.ReadLegacyDevicesAsync("default", CancellationToken.None);
+        await client.ReadLegacyClientsAsync("default", CancellationToken.None);
+
+        Assert.Collection(
+            handler.Requests,
+            request =>
+            {
+                Assert.Equal("GET", request.Method);
+                Assert.Equal("https://unifi.nutria-newton.ts.net/proxy/network/api/s/default/stat/device", request.Uri);
+                Assert.Equal("test-api-key", request.ApiKey);
+            },
+            request =>
+            {
+                Assert.Equal("GET", request.Method);
+                Assert.Equal("https://unifi.nutria-newton.ts.net/proxy/network/api/s/default/stat/sta", request.Uri);
+                Assert.Equal("test-api-key", request.ApiKey);
+            });
+    }
+
+    [Fact]
+    public async Task Legacy_reads_reject_path_shaping_site_references()
+    {
+        var handler = new RecordingHandler(_ => JsonResponse(HttpStatusCode.OK, "{\"data\":[]}"));
+        using var client = CreateClient(handler);
+
+        await Assert.ThrowsAsync<ArgumentException>(() =>
+            client.ReadLegacyDevicesAsync("../default", CancellationToken.None));
+
+        Assert.Empty(handler.Requests);
+    }
+
     private static UnifiClient CreateClient(
         HttpMessageHandler handler,
         Func<TimeSpan, CancellationToken, Task>? delay = null) =>
@@ -136,6 +189,19 @@ public sealed class UnifiClientTests
     {
         var contract = OpenApiContract.LoadEmbedded();
         return contract.ValidateAndBuild(contract.GetOperation(operationId, requireRead), null, null, null);
+    }
+
+    private static ValidatedRequest SiteRequest(string operationId)
+    {
+        var contract = OpenApiContract.LoadEmbedded();
+        return contract.ValidateAndBuild(
+            contract.GetOperation(operationId, requireRead: true),
+            new Dictionary<string, string>
+            {
+                ["siteId"] = "00000000-0000-0000-0000-000000000001"
+            },
+            null,
+            null);
     }
 
     private static ValidatedRequest DeviceActionRequest()

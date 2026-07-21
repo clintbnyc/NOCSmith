@@ -11,17 +11,20 @@ public sealed class ReadService
     private readonly IUnifiClient _client;
     private readonly SiteResolver _siteResolver;
     private readonly SecretRedactor _redactor;
+    private readonly LegacyReadEnrichmentService _legacyEnrichment;
 
     public ReadService(
         ContractProvider contracts,
         IUnifiClient client,
         SiteResolver siteResolver,
-        SecretRedactor redactor)
+        SecretRedactor redactor,
+        LegacyReadEnrichmentService legacyEnrichment)
     {
         _contracts = contracts;
         _client = client;
         _siteResolver = siteResolver;
         _redactor = redactor;
+        _legacyEnrichment = legacyEnrichment;
     }
 
     public async Task<ToolResponse> ExecuteAsync(
@@ -37,6 +40,13 @@ public sealed class ReadService
         var request = contract.ValidateAndBuild(operation, resolvedPath, queryParameters, null);
         var response = await _client.ReadAsync(request, cancellationToken).ConfigureAwait(false);
         var redacted = ResponseMetadata.AnnotatePagination(_redactor.Redact(response), queryParameters);
+        redacted = await _legacyEnrichment.EnrichAsync(operation.OperationId, resolvedPath, redacted, cancellationToken)
+            .ConfigureAwait(false);
+        redacted = ResponseMetadata.AnnotateCoverage(
+            redacted,
+            operation.OperationId,
+            _contracts,
+            legacyReadEnrichmentSucceeded: HasSuccessfulLegacyEnrichment(redacted));
         return new ToolResponse(Summarize(operation.Summary, redacted), redacted);
     }
 
@@ -51,4 +61,10 @@ public sealed class ReadService
             ? summary + " completed." + truncation
             : $"{summary}: {count} item(s) returned.{truncation}";
     }
+
+    private static bool HasSuccessfulLegacyEnrichment(JsonNode? response) =>
+        string.Equals(
+            response?["_connector"]?["legacyReadEnrichment"]?["status"]?.GetValue<string>(),
+            "ok",
+            StringComparison.Ordinal);
 }

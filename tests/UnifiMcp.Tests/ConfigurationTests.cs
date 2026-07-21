@@ -12,11 +12,13 @@ public sealed class ConfigurationTests
             ("UNIFI_BASE_URL", null),
             ("UNIFI_API_KEY", "test-key"),
             ("UNIFI_DEFAULT_SITE_ID", null),
-            ("UNIFI_TIMEOUT_SECONDS", null));
+            ("UNIFI_TIMEOUT_SECONDS", null),
+            ("UNIFI_ENABLE_LEGACY_READ_ENRICHMENT", null));
 
         var configuration = UnifiConfiguration.Load();
 
         Assert.Equal("https://unifi.nutria-newton.ts.net/proxy/network/integration/", configuration.BaseUri.ToString());
+        Assert.False(configuration.EnableLegacyReadEnrichment);
     }
 
     [Fact]
@@ -37,6 +39,24 @@ public sealed class ConfigurationTests
             ("UNIFI_BASE_URL", "http://unifi.nutria-newton.ts.net/"));
 
         Assert.Throws<ConfigurationException>(() => UnifiConfiguration.Load());
+    }
+
+    [Fact]
+    public void Legacy_read_enrichment_requires_an_explicit_boolean_opt_in()
+    {
+        using (new EnvironmentScope(
+                   ("UNIFI_API_KEY", "test-key"),
+                   ("UNIFI_ENABLE_LEGACY_READ_ENRICHMENT", "true")))
+        {
+            Assert.True(UnifiConfiguration.Load().EnableLegacyReadEnrichment);
+        }
+
+        using (new EnvironmentScope(
+                   ("UNIFI_API_KEY", "test-key"),
+                   ("UNIFI_ENABLE_LEGACY_READ_ENRICHMENT", "yes")))
+        {
+            Assert.Throws<ConfigurationException>(() => UnifiConfiguration.Load());
+        }
     }
 }
 

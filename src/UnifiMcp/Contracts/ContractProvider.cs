@@ -32,6 +32,14 @@ public sealed class ContractProvider
 
     public string? LastProbeWarning { get; private set; }
 
+    public string Status => Current.Source.StartsWith("controller:", StringComparison.Ordinal)
+        ? "controller-match"
+        : string.IsNullOrWhiteSpace(LiveApplicationVersion)
+            ? "unverified"
+            : string.Equals(Current.Version, LiveApplicationVersion, StringComparison.Ordinal)
+                ? "embedded-match"
+                : "embedded-fallback";
+
     public async Task RefreshAsync(CancellationToken cancellationToken)
     {
         await _refreshLock.WaitAsync(cancellationToken).ConfigureAwait(false);
@@ -39,6 +47,7 @@ public sealed class ContractProvider
         {
             var embedded = Current.Source == "embedded" ? Current : OpenApiContract.LoadEmbedded();
             Current = embedded;
+            LiveApplicationVersion = null;
             LastProbeWarning = null;
 
             JsonNode? info;
@@ -70,7 +79,8 @@ public sealed class ContractProvider
                     if (!string.IsNullOrWhiteSpace(LiveApplicationVersion) &&
                         !string.Equals(contract.Version, LiveApplicationVersion, StringComparison.Ordinal))
                     {
-                        LastProbeWarning = $"Controller contract {contract.Version} did not match live Network {LiveApplicationVersion}; using embedded {embedded.Version}.";
+                        LastProbeWarning = $"Controller contract {contract.Version} did not match live Network {LiveApplicationVersion}; " +
+                            $"operations remain restricted to reviewed embedded {embedded.Version}, and response fields outside that contract may be unavailable.";
                         continue;
                     }
 
@@ -87,7 +97,8 @@ public sealed class ContractProvider
 
             if (!string.Equals(LiveApplicationVersion, embedded.Version, StringComparison.Ordinal))
             {
-                LastProbeWarning = $"Live Network is {LiveApplicationVersion ?? "unknown"}; controller OpenAPI was unavailable, so operations are restricted to embedded {embedded.Version}.";
+                LastProbeWarning = $"Live Network is {LiveApplicationVersion ?? "unknown"}; no matching controller OpenAPI was available, so operations remain " +
+                    $"restricted to reviewed embedded {embedded.Version}, and response fields outside that contract may be unavailable.";
                 _logger.LogWarning("{Warning}", LastProbeWarning);
             }
         }

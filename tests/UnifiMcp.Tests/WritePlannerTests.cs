@@ -327,6 +327,12 @@ public sealed class WritePlannerTests
 
         public Task<JsonNode?> GetFixedAsync(string relativePath, CancellationToken cancellationToken) =>
             Task.FromResult<JsonNode?>(null);
+
+        public Task<JsonNode?> ReadLegacyDevicesAsync(string internalSiteReference, CancellationToken cancellationToken) =>
+            throw new NotSupportedException();
+
+        public Task<JsonNode?> ReadLegacyClientsAsync(string internalSiteReference, CancellationToken cancellationToken) =>
+            throw new NotSupportedException();
     }
 
     private sealed class ManualTimeProvider : TimeProvider

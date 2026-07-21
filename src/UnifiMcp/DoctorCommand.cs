@@ -33,6 +33,12 @@ public static class DoctorCommand
                     new Dictionary<string, string> { ["offset"] = "0", ["limit"] = "200" },
                     null),
                 cancellationToken).ConfigureAwait(false);
+            var legacyReadEnrichment = await ProbeLegacyReadEnrichmentAsync(
+                configuration,
+                client,
+                sites,
+                redactor,
+                cancellationToken).ConfigureAwait(false);
 
             var result = new JsonObject
             {
@@ -43,7 +49,9 @@ public static class DoctorCommand
                 ["liveApplicationVersion"] = provider.LiveApplicationVersion,
                 ["contractVersion"] = provider.Current.Version,
                 ["contractSource"] = provider.Current.Source,
+                ["contractStatus"] = provider.Status,
                 ["contractWarning"] = provider.LastProbeWarning,
+                ["legacyReadEnrichment"] = legacyReadEnrichment,
                 ["application"] = redactor.Redact(info),
                 ["siteCount"] = sites?["totalCount"]?.DeepClone()
                     ?? sites?["count"]?.DeepClone()
@@ -57,6 +65,56 @@ public static class DoctorCommand
             var key = Environment.GetEnvironmentVariable("UNIFI_API_KEY");
             Console.Error.WriteLine("UniFi MCP doctor failed: " + new SecretRedactor(key).Redact(exception.Message));
             return 1;
+        }
+    }
+
+    private static async Task<JsonObject> ProbeLegacyReadEnrichmentAsync(
+        UnifiConfiguration configuration,
+        UnifiClient client,
+        JsonNode? sites,
+        SecretRedactor redactor,
+        CancellationToken cancellationToken)
+    {
+        if (!configuration.EnableLegacyReadEnrichment)
+        {
+            return new JsonObject { ["enabled"] = false, ["status"] = "disabled" };
+        }
+
+        try
+        {
+            var site = (sites?["data"] as JsonArray)?.OfType<JsonObject>().FirstOrDefault()
+                ?? throw new ContractException("No site was available for the legacy read probe.");
+            var internalReference = site["internalReference"]?.GetValue<string>();
+            if (string.IsNullOrWhiteSpace(internalReference))
+            {
+                throw new ContractException("The site did not include a legacy internalReference.");
+            }
+
+            var devices = await client.ReadLegacyDevicesAsync(internalReference, cancellationToken).ConfigureAwait(false);
+            var clients = await client.ReadLegacyClientsAsync(internalReference, cancellationToken).ConfigureAwait(false);
+            return new JsonObject
+            {
+                ["enabled"] = true,
+                ["status"] = "ok",
+                ["readOnly"] = true,
+                ["deviceRecords"] = (devices?["data"] as JsonArray)?.Count ?? 0,
+                ["clientRecords"] = (clients?["data"] as JsonArray)?.Count ?? 0,
+                ["rawResponsesReturned"] = false
+            };
+        }
+        catch (TaskCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+            throw;
+        }
+        catch (Exception exception) when (exception is UnifiApiException or ContractException or HttpRequestException or TaskCanceledException or InvalidOperationException)
+        {
+            return new JsonObject
+            {
+                ["enabled"] = true,
+                ["status"] = "failed",
+                ["readOnly"] = true,
+                ["error"] = redactor.Redact(exception.Message)
+            };
         }
     }
 }
