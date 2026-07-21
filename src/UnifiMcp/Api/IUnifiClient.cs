@@ -10,4 +10,8 @@ public interface IUnifiClient
     Task<JsonNode?> MutateAsync(ValidatedRequest request, CancellationToken cancellationToken);
 
     Task<JsonNode?> GetFixedAsync(string relativePath, CancellationToken cancellationToken);
+
+    Task<JsonNode?> ReadLegacyDevicesAsync(string internalSiteReference, CancellationToken cancellationToken);
+
+    Task<JsonNode?> ReadLegacyClientsAsync(string internalSiteReference, CancellationToken cancellationToken);
 }

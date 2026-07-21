@@ -6,7 +6,8 @@ public sealed record UnifiConfiguration(
     Uri BaseUri,
     string ApiKey,
     string? DefaultSiteId,
-    TimeSpan RequestTimeout)
+    TimeSpan RequestTimeout,
+    bool EnableLegacyReadEnrichment = false)
 {
     public const string DefaultBaseUrl = "https://unifi.nutria-newton.ts.net/proxy/network/integration";
 
@@ -71,7 +72,15 @@ public sealed record UnifiConfiguration(
             timeout = TimeSpan.FromSeconds(seconds);
         }
 
-        return new UnifiConfiguration(baseUri, apiKey, defaultSiteId, timeout);
+        var enableLegacyReadEnrichment = false;
+        var legacyReadText = Environment.GetEnvironmentVariable("UNIFI_ENABLE_LEGACY_READ_ENRICHMENT")?.Trim();
+        if (!string.IsNullOrEmpty(legacyReadText) &&
+            !bool.TryParse(legacyReadText, out enableLegacyReadEnrichment))
+        {
+            throw new ConfigurationException("UNIFI_ENABLE_LEGACY_READ_ENRICHMENT must be true or false when set.");
+        }
+
+        return new UnifiConfiguration(baseUri, apiKey, defaultSiteId, timeout, enableLegacyReadEnrichment);
     }
 }
 

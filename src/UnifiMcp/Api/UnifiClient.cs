@@ -73,6 +73,20 @@ public sealed class UnifiClient : IUnifiClient, IDisposable
         return SendWithReadRetriesAsync(HttpMethod.Get, relativePath, null, cancellationToken);
     }
 
+    public Task<JsonNode?> ReadLegacyDevicesAsync(string internalSiteReference, CancellationToken cancellationToken) =>
+        SendWithReadRetriesAsync(
+            HttpMethod.Get,
+            BuildLegacyReadPath(internalSiteReference, "stat/device"),
+            null,
+            cancellationToken);
+
+    public Task<JsonNode?> ReadLegacyClientsAsync(string internalSiteReference, CancellationToken cancellationToken) =>
+        SendWithReadRetriesAsync(
+            HttpMethod.Get,
+            BuildLegacyReadPath(internalSiteReference, "stat/sta"),
+            null,
+            cancellationToken);
+
     public void Dispose() => _httpClient.Dispose();
 
     private async Task<JsonNode?> SendWithReadRetriesAsync(
@@ -162,6 +176,7 @@ public sealed class UnifiClient : IUnifiClient, IDisposable
                 }
 
                 var detail = ExtractErrorDetail(content);
+                var errorCode = ExtractErrorCode(content);
                 var message = response.StatusCode switch
                 {
                     HttpStatusCode.Unauthorized => "UniFi rejected the API key (401). Verify the Network Integration key and 1Password reference.",
@@ -170,7 +185,7 @@ public sealed class UnifiClient : IUnifiClient, IDisposable
                     _ => $"UniFi returned HTTP {(int)response.StatusCode} ({response.ReasonPhrase}).{detail}"
                 };
 
-                throw new UnifiApiException(response.StatusCode, _redactor.Redact(message));
+                throw new UnifiApiException(response.StatusCode, _redactor.Redact(message), errorCode);
             }
 
             if (string.IsNullOrWhiteSpace(content))
@@ -209,10 +224,40 @@ public sealed class UnifiClient : IUnifiClient, IDisposable
         }
     }
 
+    private string? ExtractErrorCode(string content)
+    {
+        if (string.IsNullOrWhiteSpace(content))
+        {
+            return null;
+        }
+
+        try
+        {
+            var code = JsonNode.Parse(content)?["code"]?.GetValue<string>();
+            return string.IsNullOrWhiteSpace(code) ? null : _redactor.Redact(code);
+        }
+        catch (Exception exception) when (exception is JsonException or InvalidOperationException)
+        {
+            return null;
+        }
+    }
+
     private static bool IsExternalUri(string value) =>
         value.StartsWith("//", StringComparison.Ordinal) ||
         (Uri.TryCreate(value, UriKind.Absolute, out var uri) &&
          (uri.Scheme == Uri.UriSchemeHttp || uri.Scheme == Uri.UriSchemeHttps));
+
+    private static string BuildLegacyReadPath(string internalSiteReference, string fixedResource)
+    {
+        if (string.IsNullOrWhiteSpace(internalSiteReference) ||
+            internalSiteReference.Length > 64 ||
+            internalSiteReference.Any(character => !char.IsAsciiLetterOrDigit(character) && character is not '-' and not '_'))
+        {
+            throw new ArgumentException("Legacy UniFi site reference contains unsupported characters.", nameof(internalSiteReference));
+        }
+
+        return $"../api/s/{Uri.EscapeDataString(internalSiteReference)}/{fixedResource}";
+    }
 
     private sealed class RetryableUnifiException : Exception
     {

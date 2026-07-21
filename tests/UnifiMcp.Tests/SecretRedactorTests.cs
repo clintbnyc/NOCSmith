@@ -62,4 +62,21 @@ public sealed class SecretRedactorTests
         Assert.Contains("filter=%3Credacted%3E", result, StringComparison.Ordinal);
         Assert.Contains("force=true", result, StringComparison.Ordinal);
     }
+
+    [Fact]
+    public void Redacts_credentials_embedded_in_notes_and_comments()
+    {
+        var redactor = new SecretRedactor();
+        var text = "Rack note; password=hunter2 token: abc123 JSON={\"psk\":\"wifi-secret\"}\n-----BEGIN PRIVATE KEY-----\nprivate-material\n-----END PRIVATE KEY-----";
+
+        var result = redactor.Redact(text);
+
+        Assert.Contains("Rack note", result, StringComparison.Ordinal);
+        Assert.DoesNotContain("hunter2", result, StringComparison.Ordinal);
+        Assert.DoesNotContain("abc123", result, StringComparison.Ordinal);
+        Assert.DoesNotContain("wifi-secret", result, StringComparison.Ordinal);
+        Assert.DoesNotContain("private-material", result, StringComparison.Ordinal);
+        Assert.Contains("password=<redacted>", result, StringComparison.Ordinal);
+        Assert.Contains("token: <redacted>", result, StringComparison.Ordinal);
+    }
 }

@@ -24,6 +24,7 @@ public static class UnifiTools
     public static Task<ToolResponse> GetCapabilities(
         ContractProvider contracts,
         UnifiConfiguration configuration,
+        LegacyReadEnrichmentService legacyEnrichment,
         [Description("Probe the live controller contract again before returning capabilities.")] bool refresh = false,
         CancellationToken cancellationToken = default) =>
         Guard(async () =>
@@ -50,10 +51,13 @@ public static class UnifiTools
                 ["baseUrl"] = configuration.BaseUri.ToString().TrimEnd('/'),
                 ["contractVersion"] = contract.Version,
                 ["contractSource"] = contract.Source,
+                ["contractStatus"] = contracts.Status,
                 ["liveApplicationVersion"] = contracts.LiveApplicationVersion,
                 ["readOperations"] = contract.ReadCount,
                 ["writeOperations"] = contract.WriteCount,
                 ["probeWarning"] = contracts.LastProbeWarning,
+                ["knownResponseLimitations"] = ResponseMetadata.GetAllKnownLimitations(contract.Version, legacyEnrichment.Enabled),
+                ["legacyReadEnrichment"] = legacyEnrichment.Describe(),
                 ["operations"] = operations
             };
             return new ToolResponse(
@@ -62,7 +66,7 @@ public static class UnifiTools
         });
 
     [McpServerTool(Name = "unifi_get_site_snapshot", Title = "Get UniFi site snapshot", ReadOnly = true, Destructive = false, OpenWorld = false, UseStructuredContent = true)]
-    [Description("Collect a recommendation-oriented snapshot of devices, clients, networks, Wi-Fi, firewall, ACL, DNS, switching, VPN, WAN, and traffic-list state. Sections fail independently.")]
+    [Description("Collect a recommendation-oriented snapshot of devices, clients, networks, Wi-Fi, firewall, ACL, DNS, switching, VPN, WAN, and traffic-list state. Sections report ok, notApplicable, or failed independently with source operations and observation times.")]
     public static Task<ToolResponse> GetSiteSnapshot(
         SnapshotService snapshots,
         [Description("Optional site UUID. Omit when exactly one site is available or UNIFI_DEFAULT_SITE_ID is set.")] string? siteId = null,
@@ -81,7 +85,7 @@ public static class UnifiTools
         ReadDomain(domains, "sites", action, null, null, offset, limit, filter, cancellationToken);
 
     [McpServerTool(Name = "unifi_devices", Title = "Read UniFi devices", ReadOnly = true, Destructive = false, OpenWorld = false, UseStructuredContent = true)]
-    [Description("Read adopted or pending UniFi devices. Actions: pending, list, get, statistics.")]
+    [Description("Read adopted or pending UniFi devices. Actions: pending, list, get, statistics. When opt-in legacy read enrichment is enabled, list and get responses project port labels, STP-related state and configuration fields, and notes/comments without returning raw legacy data. The normalized UniFi UI Edge/Participant role is unavailable.")]
     public static Task<ToolResponse> Devices(
         DomainReadService domains,
         [Description("pending, list, get, or statistics.")] string action,
@@ -94,7 +98,7 @@ public static class UnifiTools
         ReadDomain(domains, "devices", action, siteId, id, offset, limit, filter, cancellationToken);
 
     [McpServerTool(Name = "unifi_clients", Title = "Read UniFi clients", ReadOnly = true, Destructive = false, OpenWorld = false, UseStructuredContent = true)]
-    [Description("Read connected UniFi clients. Actions: list or get.")]
+    [Description("Read connected UniFi clients. Actions: list or get. Client type and uplink are controller-reported observation points; responses warn when third-party bridging prevents a reliable physical attachment inference. Opt-in legacy read enrichment projects client notes/comments.")]
     public static Task<ToolResponse> Clients(DomainReadService domains, string action, string? siteId = null, string? id = null, int? offset = null, int? limit = null, string? filter = null, CancellationToken cancellationToken = default) =>
         ReadDomain(domains, "clients", action, siteId, id, offset, limit, filter, cancellationToken);
 

@@ -34,6 +34,7 @@ try
     builder.Services.AddSingleton<WritePlanner>();
     builder.Services.AddSingleton<ReadService>();
     builder.Services.AddSingleton<DomainReadService>();
+    builder.Services.AddSingleton<LegacyReadEnrichmentService>();
     builder.Services.AddSingleton<SnapshotService>();
     builder.Services.AddHostedService<ContractProbeHostedService>();
 
