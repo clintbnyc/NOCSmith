@@ -123,10 +123,10 @@ After a Release build and successful `doctor`, register the stdio server without
 ```sh
 codex mcp add unifi -- \
   /opt/homebrew/bin/op --account YOUR_ACCOUNT_ID run \
-  --env-file=/Users/cbeilman/source/unifi-mcp/.env.op \
+  --env-file=/Users/cbeilman/source/personal/unifi-mcp/.env.op \
   -- \
   /usr/local/share/dotnet/dotnet \
-  /Users/cbeilman/source/unifi-mcp/src/UnifiMcp/bin/Release/net10.0/unifi-mcp.dll
+  /Users/cbeilman/source/personal/unifi-mcp/src/UnifiMcp/bin/Release/net10.0/unifi-mcp.dll
 ```
 
 Equivalent `~/.codex/config.toml` settings are:
@@ -138,12 +138,12 @@ args = [
   "--account",
   "YOUR_ACCOUNT_ID",
   "run",
-  "--env-file=/Users/cbeilman/source/unifi-mcp/.env.op",
+  "--env-file=/Users/cbeilman/source/personal/unifi-mcp/.env.op",
   "--",
   "/usr/local/share/dotnet/dotnet",
-  "/Users/cbeilman/source/unifi-mcp/src/UnifiMcp/bin/Release/net10.0/unifi-mcp.dll",
+  "/Users/cbeilman/source/personal/unifi-mcp/src/UnifiMcp/bin/Release/net10.0/unifi-mcp.dll",
 ]
-cwd = "/Users/cbeilman/source/unifi-mcp"
+cwd = "/Users/cbeilman/source/personal/unifi-mcp"
 startup_timeout_sec = 30
 tool_timeout_sec = 90
 default_tools_approval_mode = "writes"
