@@ -115,7 +115,7 @@ public sealed class LegacyReadEnrichmentService
 
     private JsonObject ProjectDevices(JsonObject officialResponse, JsonNode? legacyResponse)
     {
-        var legacyByMac = ReadPrivateRecords(legacyResponse)
+        var legacyByMac = PrivateReadResponseParser.ReadRecords(legacyResponse)
             .Where(record => ReadMac(record) is not null)
             .GroupBy(record => ReadMac(record)!, StringComparer.OrdinalIgnoreCase)
             .ToDictionary(group => group.Key, group => group.First(), StringComparer.OrdinalIgnoreCase);
@@ -156,7 +156,7 @@ public sealed class LegacyReadEnrichmentService
 
     private JsonObject ProjectClients(JsonObject officialResponse, JsonNode? legacyResponse)
     {
-        var legacyByMac = ReadPrivateRecords(legacyResponse)
+        var legacyByMac = PrivateReadResponseParser.ReadRecords(legacyResponse)
             .Where(record => ReadMac(record) is not null)
             .GroupBy(record => ReadMac(record)!, StringComparer.OrdinalIgnoreCase)
             .ToDictionary(group => group.Key, group => group.First(), StringComparer.OrdinalIgnoreCase);
@@ -340,22 +340,6 @@ public sealed class LegacyReadEnrichmentService
         }
 
         return new[] { response };
-    }
-
-    private static IEnumerable<JsonObject> ReadPrivateRecords(JsonNode? response)
-    {
-        if (response is JsonArray records)
-        {
-            return records.OfType<JsonObject>();
-        }
-
-        if (response?["data"] is JsonArray data)
-        {
-            return data.OfType<JsonObject>();
-        }
-
-        throw new InvalidOperationException(
-            "Private UniFi read did not return an array or an object containing a data array.");
     }
 
     private static string? ReadMac(JsonObject record)

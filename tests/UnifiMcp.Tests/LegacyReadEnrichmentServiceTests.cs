@@ -198,6 +198,36 @@ public sealed class LegacyReadEnrichmentServiceTests
     }
 
     [Fact]
+    public async Task Client_enrichment_rejects_non_object_private_records()
+    {
+        var client = new LegacyClient
+        {
+            PrivateClients = new JsonArray
+            {
+                new JsonObject { ["mac"] = "aa:bb:cc:dd:ee:01", ["note"] = "Patch panel 9" },
+                JsonValue.Create("not-a-client-record")
+            }
+        };
+        var service = CreateService(client, enabled: true);
+        var response = new JsonObject
+        {
+            ["id"] = DeviceId,
+            ["macAddress"] = "aa:bb:cc:dd:ee:01"
+        };
+
+        var result = await service.EnrichAsync(
+            "getConnectedClientDetails",
+            new Dictionary<string, string> { ["siteId"] = SiteId },
+            response,
+            CancellationToken.None);
+
+        var enrichment = Assert.IsType<JsonObject>(result!["_connector"]!["legacyReadEnrichment"]);
+        Assert.Equal("failed", enrichment["status"]!.GetValue<string>());
+        Assert.Contains("non-object record at index 1", enrichment["error"]!.GetValue<string>(), StringComparison.Ordinal);
+        Assert.False(enrichment.ContainsKey("records"));
+    }
+
+    [Fact]
     public async Task Enrichment_is_opt_in_and_failure_does_not_fail_the_official_read()
     {
         var disabledClient = new LegacyClient();

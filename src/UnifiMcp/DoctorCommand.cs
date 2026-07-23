@@ -129,21 +129,8 @@ public static class DoctorCommand
         }
     }
 
-    internal static int CountPrivateClientRecords(JsonNode? response)
-    {
-        if (response is JsonArray records)
-        {
-            return records.Count;
-        }
-
-        if (response?["data"] is JsonArray data)
-        {
-            return data.Count;
-        }
-
-        throw new ContractException(
-            "Private UniFi client read did not return an array or an object containing a data array.");
-    }
+    internal static int CountPrivateClientRecords(JsonNode? response) =>
+        PrivateReadResponseParser.ReadRecords(response).Count;
 
     private static async Task<JsonObject> ProbeSystemLogsAsync(
         UnifiConfiguration configuration,
