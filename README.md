@@ -120,15 +120,40 @@ Supply the reviewed published version to the script. Do not silently refresh the
 
 ## Codex registration
 
-After a Release build and successful `doctor`, register the stdio server without putting the key or its `op://` reference in Codex configuration:
+### Stable local publish
+
+A worktree build path disappears when that worktree is removed. Before cleaning up a verified worktree, publish it to the stable local connector directory:
+
+```sh
+./scripts/publish-local.sh
+```
+
+The script restores locked dependencies, runs the complete Release test suite, publishes into a new versioned directory under `~/source/personal/mcp-connectors/unifi-mcp/releases/`, and atomically switches the `current` symlink only after all prior steps succeed. It never copies `.env.op` or resolved secrets. Existing releases remain available for manual rollback; the script does not prune them.
+
+An alternate absolute destination may be supplied as the first argument. The default durable entrypoint is:
+
+```text
+/Users/cbeilman/source/personal/mcp-connectors/unifi-mcp/current/unifi-mcp
+```
+
+Run the published diagnostic with the ignored 1Password reference from the persistent source checkout:
+
+```sh
+/opt/homebrew/bin/op --account YOUR_ACCOUNT_ID run \
+  --env-file=/Users/cbeilman/source/personal/unifi-mcp/.env.op \
+  -- \
+  /Users/cbeilman/source/personal/mcp-connectors/unifi-mcp/current/unifi-mcp \
+  doctor
+```
+
+After the published `doctor` succeeds, register the stdio server without putting the key or its `op://` reference in Codex configuration:
 
 ```sh
 codex mcp add unifi -- \
   /opt/homebrew/bin/op --account YOUR_ACCOUNT_ID run \
   --env-file=/Users/cbeilman/source/personal/unifi-mcp/.env.op \
   -- \
-  /usr/local/share/dotnet/dotnet \
-  /Users/cbeilman/source/personal/unifi-mcp/src/UnifiMcp/bin/Release/net10.0/unifi-mcp.dll
+  /Users/cbeilman/source/personal/mcp-connectors/unifi-mcp/current/unifi-mcp
 ```
 
 Equivalent `~/.codex/config.toml` settings are:
@@ -142,10 +167,9 @@ args = [
   "run",
   "--env-file=/Users/cbeilman/source/personal/unifi-mcp/.env.op",
   "--",
-  "/usr/local/share/dotnet/dotnet",
-  "/Users/cbeilman/source/personal/unifi-mcp/src/UnifiMcp/bin/Release/net10.0/unifi-mcp.dll",
+  "/Users/cbeilman/source/personal/mcp-connectors/unifi-mcp/current/unifi-mcp",
 ]
-cwd = "/Users/cbeilman/source/personal/unifi-mcp"
+cwd = "/Users/cbeilman/source/personal/mcp-connectors/unifi-mcp/current"
 startup_timeout_sec = 30
 tool_timeout_sec = 90
 default_tools_approval_mode = "writes"
