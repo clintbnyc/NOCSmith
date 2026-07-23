@@ -13,7 +13,7 @@ public interface IUnifiClient
 
     Task<JsonNode?> ReadLegacyDevicesAsync(string internalSiteReference, CancellationToken cancellationToken);
 
-    Task<JsonNode?> ReadLegacyClientsAsync(string internalSiteReference, CancellationToken cancellationToken);
+    Task<JsonNode?> ReadPrivateClientsAsync(string internalSiteReference, CancellationToken cancellationToken);
 
     Task<JsonNode?> QuerySystemLogsAsync(string internalSiteReference, CancellationToken cancellationToken);
 }
