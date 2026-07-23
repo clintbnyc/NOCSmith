@@ -165,13 +165,10 @@ public sealed class LegacyReadEnrichmentServiceTests
     {
         var client = new LegacyClient
         {
-            LegacyClients = new JsonObject
+            PrivateClients = new JsonArray
             {
-                ["data"] = new JsonArray
-                {
-                    new JsonObject { ["mac"] = "aa:bb:cc:dd:ee:01", ["note"] = "Patch panel 9" },
-                    new JsonObject { ["mac"] = "aa:bb:cc:dd:ee:02", ["note"] = "Not on requested page" }
-                }
+                new JsonObject { ["mac"] = "aa:bb:cc:dd:ee:01", ["note"] = "Patch panel 9" },
+                new JsonObject { ["mac"] = "aa:bb:cc:dd:ee:02", ["note"] = "Not on requested page" }
             }
         };
         var service = CreateService(client, enabled: true);
@@ -189,10 +186,45 @@ public sealed class LegacyReadEnrichmentServiceTests
             response,
             CancellationToken.None);
 
-        var records = result!["_connector"]!["legacyReadEnrichment"]!["records"]!.AsArray();
+        var enrichment = result!["_connector"]!["legacyReadEnrichment"]!;
+        var records = enrichment["records"]!.AsArray();
         var record = Assert.Single(records)!;
+        Assert.Equal("private-v2-api", enrichment["source"]!.GetValue<string>());
+        Assert.Equal(
+            "v2/api/site/{site}/clients/active?includeTrafficUsage=true&includeUnifiDevices=true",
+            enrichment["fixedResource"]!.GetValue<string>());
         Assert.Equal("Patch panel 9", record["note"]!.GetValue<string>());
         Assert.DoesNotContain("Not on requested page", records.ToJsonString(), StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task Client_enrichment_rejects_non_object_private_records()
+    {
+        var client = new LegacyClient
+        {
+            PrivateClients = new JsonArray
+            {
+                new JsonObject { ["mac"] = "aa:bb:cc:dd:ee:01", ["note"] = "Patch panel 9" },
+                JsonValue.Create("not-a-client-record")
+            }
+        };
+        var service = CreateService(client, enabled: true);
+        var response = new JsonObject
+        {
+            ["id"] = DeviceId,
+            ["macAddress"] = "aa:bb:cc:dd:ee:01"
+        };
+
+        var result = await service.EnrichAsync(
+            "getConnectedClientDetails",
+            new Dictionary<string, string> { ["siteId"] = SiteId },
+            response,
+            CancellationToken.None);
+
+        var enrichment = Assert.IsType<JsonObject>(result!["_connector"]!["legacyReadEnrichment"]);
+        Assert.Equal("failed", enrichment["status"]!.GetValue<string>());
+        Assert.Contains("non-object record at index 1", enrichment["error"]!.GetValue<string>(), StringComparison.Ordinal);
+        Assert.False(enrichment.ContainsKey("records"));
     }
 
     [Fact]
@@ -266,7 +298,7 @@ public sealed class LegacyReadEnrichmentServiceTests
     {
         public JsonNode? LegacyDevices { get; init; } = new JsonObject { ["data"] = new JsonArray() };
 
-        public JsonNode? LegacyClients { get; init; } = new JsonObject { ["data"] = new JsonArray() };
+        public JsonNode? PrivateClients { get; init; } = new JsonArray();
 
         public bool LegacyFailure { get; init; }
 
@@ -303,13 +335,13 @@ public sealed class LegacyReadEnrichmentServiceTests
                 : Task.FromResult(LegacyDevices?.DeepClone());
         }
 
-        public Task<JsonNode?> ReadLegacyClientsAsync(string internalSiteReference, CancellationToken cancellationToken)
+        public Task<JsonNode?> ReadPrivateClientsAsync(string internalSiteReference, CancellationToken cancellationToken)
         {
             LegacyReadCount++;
             Assert.Equal("default", internalSiteReference);
             return LegacyFailure
                 ? Task.FromException<JsonNode?>(new UnifiApiException(HttpStatusCode.Unauthorized, "denied"))
-                : Task.FromResult(LegacyClients?.DeepClone());
+                : Task.FromResult(PrivateClients?.DeepClone());
         }
 
         public Task<JsonNode?> QuerySystemLogsAsync(string internalSiteReference, CancellationToken cancellationToken) =>

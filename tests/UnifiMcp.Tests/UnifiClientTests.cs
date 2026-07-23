@@ -142,7 +142,7 @@ public sealed class UnifiClientTests
         using var client = CreateClient(handler);
 
         await client.ReadLegacyDevicesAsync("default", CancellationToken.None);
-        await client.ReadLegacyClientsAsync("default", CancellationToken.None);
+        await client.ReadPrivateClientsAsync("default", CancellationToken.None);
         await client.QuerySystemLogsAsync("default", CancellationToken.None);
 
         Assert.Collection(
@@ -157,7 +157,9 @@ public sealed class UnifiClientTests
             request =>
             {
                 Assert.Equal("GET", request.Method);
-                Assert.Equal("https://unifi.nutria-newton.ts.net/proxy/network/api/s/default/stat/sta", request.Uri);
+                Assert.Equal(
+                    "https://unifi.nutria-newton.ts.net/proxy/network/v2/api/site/default/clients/active?includeTrafficUsage=true&includeUnifiDevices=true",
+                    request.Uri);
                 Assert.Equal("test-api-key", request.ApiKey);
                 Assert.Null(request.Body);
             },
@@ -194,7 +196,7 @@ public sealed class UnifiClientTests
     }
 
     [Fact]
-    public async Task Legacy_reads_reject_path_shaping_site_references()
+    public async Task Private_reads_reject_path_shaping_site_references()
     {
         var handler = new RecordingHandler(_ => JsonResponse(HttpStatusCode.OK, "{\"data\":[]}"));
         using var client = CreateClient(handler);

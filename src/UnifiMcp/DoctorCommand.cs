@@ -91,22 +91,25 @@ public static class DoctorCommand
         try
         {
             var site = (sites?["data"] as JsonArray)?.OfType<JsonObject>().FirstOrDefault()
-                ?? throw new ContractException("No site was available for the legacy read probe.");
+                ?? throw new ContractException("No site was available for the private read-enrichment probe.");
             var internalReference = site["internalReference"]?.GetValue<string>();
             if (string.IsNullOrWhiteSpace(internalReference))
             {
-                throw new ContractException("The site did not include a legacy internalReference.");
+                throw new ContractException("The site did not include the private API internalReference.");
             }
 
             var devices = await client.ReadLegacyDevicesAsync(internalReference, cancellationToken).ConfigureAwait(false);
-            var clients = await client.ReadLegacyClientsAsync(internalReference, cancellationToken).ConfigureAwait(false);
+            var clients = await client.ReadPrivateClientsAsync(internalReference, cancellationToken).ConfigureAwait(false);
+            var clientRecordCount = CountPrivateClientRecords(clients);
             return new JsonObject
             {
                 ["enabled"] = true,
                 ["status"] = "ok",
                 ["readOnly"] = true,
                 ["deviceRecords"] = (devices?["data"] as JsonArray)?.Count ?? 0,
-                ["clientRecords"] = (clients?["data"] as JsonArray)?.Count ?? 0,
+                ["clientRecords"] = clientRecordCount,
+                ["deviceSource"] = "legacy-private-api",
+                ["clientSource"] = "private-v2-api",
                 ["rawResponsesReturned"] = false
             };
         }
@@ -125,6 +128,9 @@ public static class DoctorCommand
             };
         }
     }
+
+    internal static int CountPrivateClientRecords(JsonNode? response) =>
+        PrivateReadResponseParser.ReadRecords(response).Count;
 
     private static async Task<JsonObject> ProbeSystemLogsAsync(
         UnifiConfiguration configuration,

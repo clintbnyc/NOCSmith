@@ -80,10 +80,10 @@ public sealed class UnifiClient : IUnifiClient, IDisposable
             null,
             cancellationToken);
 
-    public Task<JsonNode?> ReadLegacyClientsAsync(string internalSiteReference, CancellationToken cancellationToken) =>
+    public Task<JsonNode?> ReadPrivateClientsAsync(string internalSiteReference, CancellationToken cancellationToken) =>
         SendWithReadRetriesAsync(
             HttpMethod.Get,
-            BuildLegacyReadPath(internalSiteReference, "stat/sta"),
+            BuildPrivateClientReadPath(internalSiteReference),
             null,
             cancellationToken);
 
@@ -264,6 +264,12 @@ public sealed class UnifiClient : IUnifiClient, IDisposable
     {
         var encodedSiteReference = EncodeInternalSiteReference(internalSiteReference);
         return $"../v2/api/site/{encodedSiteReference}/system-log/all";
+    }
+
+    private static string BuildPrivateClientReadPath(string internalSiteReference)
+    {
+        var encodedSiteReference = EncodeInternalSiteReference(internalSiteReference);
+        return $"../v2/api/site/{encodedSiteReference}/clients/active?includeTrafficUsage=true&includeUnifiDevices=true";
     }
 
     private static string EncodeInternalSiteReference(string internalSiteReference)

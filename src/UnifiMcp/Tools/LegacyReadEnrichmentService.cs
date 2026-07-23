@@ -10,6 +10,8 @@ namespace UnifiMcp.Tools;
 
 public sealed class LegacyReadEnrichmentService
 {
+    private const string LegacyDeviceResource = "stat/device";
+    private const string PrivateClientResource = "v2/api/site/{site}/clients/active?includeTrafficUsage=true&includeUnifiDevices=true";
     private const string DeviceDetailsOperationId = "getAdoptedDeviceDetails";
     private const string DeviceOverviewOperationId = "getAdoptedDeviceOverviewPage";
     private const string ClientDetailsOperationId = "getConnectedClientDetails";
@@ -77,7 +79,7 @@ public sealed class LegacyReadEnrichmentService
                     await _client.ReadLegacyDevicesAsync(internalSiteReference, cancellationToken).ConfigureAwait(false))
                 : ProjectClients(
                     responseObject,
-                    await _client.ReadLegacyClientsAsync(internalSiteReference, cancellationToken).ConfigureAwait(false));
+                    await _client.ReadPrivateClientsAsync(internalSiteReference, cancellationToken).ConfigureAwait(false));
             connector["legacyReadEnrichment"] = enrichment;
         }
         catch (TaskCanceledException) when (cancellationToken.IsCancellationRequested)
@@ -104,15 +106,16 @@ public sealed class LegacyReadEnrichmentService
         ["enabled"] = Enabled,
         ["readOnly"] = true,
         ["authentication"] = "existing X-API-Key",
-        ["fixedResources"] = new JsonArray("stat/device", "stat/sta"),
+        ["fixedResources"] = new JsonArray(LegacyDeviceResource, PrivateClientResource),
         ["projectedData"] = new JsonArray("port labels", "STP-related state and configuration fields", "device notes/comments", "client notes/comments"),
         ["normalizedUiStpRole"] = CreateUnavailableNormalizedUiStpRole(),
+        ["rawPrivateResponsesReturned"] = false,
         ["rawLegacyResponsesReturned"] = false
     };
 
     private JsonObject ProjectDevices(JsonObject officialResponse, JsonNode? legacyResponse)
     {
-        var legacyByMac = ReadLegacyRecords(legacyResponse)
+        var legacyByMac = PrivateReadResponseParser.ReadRecords(legacyResponse)
             .Where(record => ReadMac(record) is not null)
             .GroupBy(record => ReadMac(record)!, StringComparer.OrdinalIgnoreCase)
             .ToDictionary(group => group.Key, group => group.First(), StringComparer.OrdinalIgnoreCase);
@@ -133,7 +136,8 @@ public sealed class LegacyReadEnrichmentService
         }
 
         var result = CreateSuccess(
-            "stat/device",
+            LegacyDeviceResource,
+            "legacy-private-api",
             records,
             new JsonArray("custom port labels", "STP-related state and configuration fields", "device notes/comments"));
         result["fieldProvenance"] = new JsonObject
@@ -152,7 +156,7 @@ public sealed class LegacyReadEnrichmentService
 
     private JsonObject ProjectClients(JsonObject officialResponse, JsonNode? legacyResponse)
     {
-        var legacyByMac = ReadLegacyRecords(legacyResponse)
+        var legacyByMac = PrivateReadResponseParser.ReadRecords(legacyResponse)
             .Where(record => ReadMac(record) is not null)
             .GroupBy(record => ReadMac(record)!, StringComparer.OrdinalIgnoreCase)
             .ToDictionary(group => group.Key, group => group.First(), StringComparer.OrdinalIgnoreCase);
@@ -173,7 +177,11 @@ public sealed class LegacyReadEnrichmentService
             }
         }
 
-        return CreateSuccess("stat/sta", records, new JsonArray("client notes/comments"));
+        return CreateSuccess(
+            PrivateClientResource,
+            "private-v2-api",
+            records,
+            new JsonArray("client notes/comments"));
     }
 
     private JsonObject ProjectDevice(JsonObject official, JsonObject legacy)
@@ -238,11 +246,11 @@ public sealed class LegacyReadEnrichmentService
     private static bool HasEnrichmentData(JsonObject record) =>
         record.Any(property => property.Key is not "id" and not "macAddress");
 
-    private JsonObject CreateSuccess(string resource, JsonArray records, JsonArray addresses) => new()
+    private JsonObject CreateSuccess(string resource, string source, JsonArray records, JsonArray addresses) => new()
     {
         ["status"] = "ok",
         ["readOnly"] = true,
-        ["source"] = "legacy-private-api",
+        ["source"] = source,
         ["fixedResource"] = resource,
         ["rawResponseReturned"] = false,
         ["redactionApplied"] = true,
@@ -332,16 +340,6 @@ public sealed class LegacyReadEnrichmentService
         }
 
         return new[] { response };
-    }
-
-    private static IEnumerable<JsonObject> ReadLegacyRecords(JsonNode? response)
-    {
-        if (response?["data"] is not JsonArray data)
-        {
-            throw new InvalidOperationException("Legacy UniFi read did not return a data array.");
-        }
-
-        return data.OfType<JsonObject>();
     }
 
     private static string? ReadMac(JsonObject record)
