@@ -25,6 +25,7 @@ public static class UnifiTools
         ContractProvider contracts,
         UnifiConfiguration configuration,
         LegacyReadEnrichmentService legacyEnrichment,
+        LegacyAlertService legacyAlerts,
         [Description("Probe the live controller contract again before returning capabilities.")] bool refresh = false,
         CancellationToken cancellationToken = default) =>
         Guard(async () =>
@@ -58,6 +59,7 @@ public static class UnifiTools
                 ["probeWarning"] = contracts.LastProbeWarning,
                 ["knownResponseLimitations"] = ResponseMetadata.GetAllKnownLimitations(contract.Version, legacyEnrichment.Enabled),
                 ["legacyReadEnrichment"] = legacyEnrichment.Describe(),
+                ["legacyAlerts"] = legacyAlerts.Describe(),
                 ["operations"] = operations
             };
             return new ToolResponse(
@@ -101,6 +103,16 @@ public static class UnifiTools
     [Description("Read connected UniFi clients. Actions: list or get. Client type and uplink are controller-reported observation points; responses warn when third-party bridging prevents a reliable physical attachment inference. Opt-in legacy read enrichment projects client notes/comments.")]
     public static Task<ToolResponse> Clients(DomainReadService domains, string action, string? siteId = null, string? id = null, int? offset = null, int? limit = null, string? filter = null, CancellationToken cancellationToken = default) =>
         ReadDomain(domains, "clients", action, siteId, id, offset, limit, filter, cancellationToken);
+
+    [McpServerTool(Name = "unifi_alerts", Title = "Read UniFi alerts", ReadOnly = true, Destructive = false, OpenWorld = false, UseStructuredContent = true)]
+    [Description("Read projected UniFi alert/event records from the fixed legacy stat/alarm resource. Returns UI-oriented fields when directly supplied by the controller, including event, description, severity, category, timestamp, IP address, clients, read/resolved state, help reference, and CEF log. Raw legacy records are never returned.")]
+    public static Task<ToolResponse> Alerts(
+        LegacyAlertService alerts,
+        [Description("Optional site UUID. Omit when exactly one site is available or UNIFI_DEFAULT_SITE_ID is set.")] string? siteId = null,
+        [Description("Include controller records marked archived. Defaults to false.")] bool includeArchived = false,
+        [Description("Maximum records to return, from 1 to 200. Defaults to 50.")] int? limit = null,
+        CancellationToken cancellationToken = default) =>
+        Guard(() => alerts.ReadAsync(siteId, includeArchived, limit, cancellationToken));
 
     [McpServerTool(Name = "unifi_networks", Title = "Read UniFi networks", ReadOnly = true, Destructive = false, OpenWorld = false, UseStructuredContent = true)]
     [Description("Read UniFi networks. Actions: list, get, or references.")]

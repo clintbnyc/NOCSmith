@@ -146,6 +146,9 @@ public sealed class SnapshotServiceTests
         public Task<JsonNode?> ReadLegacyClientsAsync(string internalSiteReference, CancellationToken cancellationToken) =>
             throw new NotSupportedException();
 
+        public Task<JsonNode?> ReadLegacyAlertsAsync(string internalSiteReference, CancellationToken cancellationToken) =>
+            throw new NotSupportedException();
+
         private static Task<JsonNode?> Failed(HttpStatusCode statusCode, string code) =>
             Task.FromException<JsonNode?>(new UnifiApiException(statusCode, "not configured", code));
     }

@@ -306,5 +306,8 @@ public sealed class LegacyReadEnrichmentServiceTests
                 ? Task.FromException<JsonNode?>(new UnifiApiException(HttpStatusCode.Unauthorized, "denied"))
                 : Task.FromResult(LegacyClients?.DeepClone());
         }
+
+        public Task<JsonNode?> ReadLegacyAlertsAsync(string internalSiteReference, CancellationToken cancellationToken) =>
+            throw new NotSupportedException();
     }
 }

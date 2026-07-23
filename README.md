@@ -1,10 +1,10 @@
 # UniFi MCP Connector
 
-Private, stdio-only MCP access to UniFi Network on pinode. The connector uses the official Integration API by default and supports a narrowly projected, opt-in legacy read enrichment for documentation fields unavailable from the official schema. It uses the active UniFi OS Server through the Tailscale HTTPS name:
+Private, stdio-only MCP access to UniFi Network on pinode. The connector uses the official Integration API by default and supports narrowly projected, opt-in legacy reads for documentation fields and alerts unavailable from the official schema. It uses the active UniFi OS Server through the Tailscale HTTPS name:
 
 `https://unifi.nutria-newton.ts.net/proxy/network/integration`
 
-It does not use the stopped `/srv/unifi` Docker rollback stack, controller database access, a public listener, or insecure TLS bypasses. Legacy enrichment, when explicitly enabled, permits only two fixed GET resources and never returns their raw responses.
+It does not use the stopped `/srv/unifi` Docker rollback stack, controller database access, a public listener, or insecure TLS bypasses. Legacy access, when explicitly enabled, permits only three fixed GET resources and never returns their raw responses.
 
 ## Security model
 
@@ -12,7 +12,7 @@ It does not use the stopped `/srv/unifi` Docker rollback stack, controller datab
 - The API key stays in 1Password. A local ignored env file contains only an `op://` reference, and `op run` injects the resolved value into the connector process.
 - This does not store the API key in macOS Keychain, the repository, or Codex configuration. The 1Password desktop app may authorize its CLI integration using normal macOS facilities, but the connector never reads Keychain directly.
 - HTTPS uses macOS/.NET system trust plus hostname validation for `unifi.nutria-newton.ts.net`. There is no certificate-validation override and no direct-IP fallback.
-- Every normal API operation must exist in the loaded OpenAPI contract. The optional legacy enrichment is separately constrained to GET `stat/device` and GET `stat/sta`; arbitrary legacy URLs, methods, and writes are rejected.
+- Every normal API operation must exist in the loaded OpenAPI contract. Optional legacy access is separately constrained to GET `stat/device`, GET `stat/sta`, and GET `stat/alarm`; arbitrary legacy URLs, methods, and writes are rejected.
 - Responses, exceptions, snapshots, and previews are recursively redacted. Wi-Fi credentials, API keys, tokens, passwords, pre-shared keys, and hotspot voucher codes are never returned.
 - GET requests retry 429, transient HTTP failures, and timeouts. Mutations are sent exactly once and are never automatically retried.
 
@@ -42,13 +42,15 @@ UNIFI_ENABLE_LEGACY_READ_ENRICHMENT=false
 
 If 1Password is locked, desktop integration is disabled, or the reference is wrong, `op run` fails before the connector receives a key. There is intentionally no service-account or plaintext fallback.
 
-Set `UNIFI_ENABLE_LEGACY_READ_ENRICHMENT=true` only when port labels, STP-related state/configuration fields, or device/client notes and comments are needed. The same `X-API-Key` is used; no administrator username/password session is introduced. The adapter performs fixed GETs under `/proxy/network/api/s/{site}/stat/device` and `/proxy/network/api/s/{site}/stat/sta`, joins records by MAC address, and returns only:
+Set `UNIFI_ENABLE_LEGACY_READ_ENRICHMENT=true` only when port labels, STP-related state/configuration fields, device/client notes and comments, or alert/event records are needed. The same `X-API-Key` is used; no administrator username/password session is introduced. The enrichment adapter performs fixed GETs under `/proxy/network/api/s/{site}/stat/device` and `/proxy/network/api/s/{site}/stat/sta`, joins records by MAC address, and returns only:
 
 - device/client IDs and MAC addresses needed to identify projected records;
 - port index, custom label, controller-native STP-related state and configuration fields, uplink flag, and selected STP mode fields;
 - `note`, `notes`, `comment`, and `comments` free text.
 
 Raw legacy responses, VLAN/network identifiers, authentication material, device keys, and all other fields are discarded before tool output is built. Selected free text is passed through the connector's secret redactor, including inline password, token, API-key, PSK, and private-key patterns. Enrichment failures are reported under `_connector.legacyReadEnrichment` without failing the official read.
+
+`unifi_alerts` separately reads only `/proxy/network/api/s/{site}/stat/alarm`. It defaults to filtering out records the controller marks archived, can retain those returned records when explicitly requested, and returns at most 200 projected records. The projection preserves controller-supplied UI concepts when present: event name/key, description, severity/priority, category, timestamps, IP address, affected-client identifiers, read/resolved/archive state, help reference, CEF log, and a small allowlist of device context. It does not derive missing UI values, return arbitrary nested alarm data, or expose the raw legacy response.
 
 The projected STP values are controller-native evidence, not a normalized UniFi UI role. Live verification found no reliable direct field for the UI's **Edge** versus **Participant** column, and `stpState`, `isUplink`, `stpPortMode`, and `settingPreference` are not individually or collectively treated as a safe mapping. The enrichment therefore reports `normalizedUiStpRole.status` as `unavailable` and does not emit `uiStpRole`.
 
@@ -72,16 +74,16 @@ Use `--env-file .env` instead if that is the ignored filename you created. If on
 
 ## MCP tools
 
-The server exposes 26 tools:
+The server exposes 27 tools:
 
 - Discovery and snapshots: `unifi_get_capabilities`, `unifi_get_site_snapshot`
-- Grouped reads: `unifi_sites`, `unifi_devices`, `unifi_clients`, `unifi_networks`, `unifi_wifi`, `unifi_hotspot`, `unifi_firewall`, `unifi_acl`, `unifi_switching`, `unifi_dns`, `unifi_traffic_lists`, `unifi_supporting_resources`
+- Grouped reads: `unifi_sites`, `unifi_devices`, `unifi_clients`, `unifi_alerts`, `unifi_networks`, `unifi_wifi`, `unifi_hotspot`, `unifi_firewall`, `unifi_acl`, `unifi_switching`, `unifi_dns`, `unifi_traffic_lists`, `unifi_supporting_resources`
 - Contract-defined read escape hatch: `unifi_read_operation`
 - Domain previews: `unifi_preview_device_change`, `unifi_preview_client_change`, `unifi_preview_network_change`, `unifi_preview_wifi_change`, `unifi_preview_hotspot_change`, `unifi_preview_firewall_change`, `unifi_preview_acl_change`, `unifi_preview_dns_change`, `unifi_preview_traffic_list_change`
 - Contract-defined write preview: `unifi_preview_operation`
 - Confirmed apply: `unifi_apply_change`
 
-Read tools support the contract's offset, limit, and filter parameters. Page responses include `_connector.truncated`; when true, request another page. Read responses also include `_connector.sourceOperationId` and an ISO-8601 `_connector.observedAt` timestamp when the response shape can carry metadata. Device-detail and client responses include `_connector.contract` and `_connector.knownLimitations` when response coverage needs explanation. A site is auto-selected only if exactly one exists or `UNIFI_DEFAULT_SITE_ID` is configured.
+Official read tools support the contract's offset, limit, and filter parameters. Page responses include `_connector.truncated`; when true, request another page. `unifi_alerts` uses a local 1-200 result limit and reports its own truncation metadata because `stat/alarm` is outside the official contract. Read responses also include observation/source metadata when their response shape can carry it. Device-detail and client responses include `_connector.contract` and `_connector.knownLimitations` when response coverage needs explanation. A site is auto-selected only if exactly one exists or `UNIFI_DEFAULT_SITE_ID` is configured.
 
 Client `type` and `uplinkDeviceId` values are preserved as controller-reported observation data. The connector does not reinterpret them as proof of a direct cable, switch port, or Wi-Fi radio association when a third-party bridge such as eero may be in the path. Client responses include `_connector.topologySemantics` so callers can distinguish reported data from physical-topology inference.
 

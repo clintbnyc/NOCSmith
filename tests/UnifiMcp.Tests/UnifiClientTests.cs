@@ -143,6 +143,7 @@ public sealed class UnifiClientTests
 
         await client.ReadLegacyDevicesAsync("default", CancellationToken.None);
         await client.ReadLegacyClientsAsync("default", CancellationToken.None);
+        await client.ReadLegacyAlertsAsync("default", CancellationToken.None);
 
         Assert.Collection(
             handler.Requests,
@@ -156,6 +157,12 @@ public sealed class UnifiClientTests
             {
                 Assert.Equal("GET", request.Method);
                 Assert.Equal("https://unifi.nutria-newton.ts.net/proxy/network/api/s/default/stat/sta", request.Uri);
+                Assert.Equal("test-api-key", request.ApiKey);
+            },
+            request =>
+            {
+                Assert.Equal("GET", request.Method);
+                Assert.Equal("https://unifi.nutria-newton.ts.net/proxy/network/api/s/default/stat/alarm", request.Uri);
                 Assert.Equal("test-api-key", request.ApiKey);
             });
     }

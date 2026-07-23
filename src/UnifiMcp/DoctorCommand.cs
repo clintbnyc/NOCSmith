@@ -39,6 +39,12 @@ public static class DoctorCommand
                 sites,
                 redactor,
                 cancellationToken).ConfigureAwait(false);
+            var legacyAlerts = await ProbeLegacyAlertsAsync(
+                configuration,
+                client,
+                sites,
+                redactor,
+                cancellationToken).ConfigureAwait(false);
 
             var result = new JsonObject
             {
@@ -52,6 +58,7 @@ public static class DoctorCommand
                 ["contractStatus"] = provider.Status,
                 ["contractWarning"] = provider.LastProbeWarning,
                 ["legacyReadEnrichment"] = legacyReadEnrichment,
+                ["legacyAlerts"] = legacyAlerts,
                 ["application"] = redactor.Redact(info),
                 ["siteCount"] = sites?["totalCount"]?.DeepClone()
                     ?? sites?["count"]?.DeepClone()
@@ -99,6 +106,59 @@ public static class DoctorCommand
                 ["readOnly"] = true,
                 ["deviceRecords"] = (devices?["data"] as JsonArray)?.Count ?? 0,
                 ["clientRecords"] = (clients?["data"] as JsonArray)?.Count ?? 0,
+                ["rawResponsesReturned"] = false
+            };
+        }
+        catch (TaskCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+            throw;
+        }
+        catch (Exception exception) when (exception is UnifiApiException or ContractException or HttpRequestException or TaskCanceledException or InvalidOperationException)
+        {
+            return new JsonObject
+            {
+                ["enabled"] = true,
+                ["status"] = "failed",
+                ["readOnly"] = true,
+                ["error"] = redactor.Redact(exception.Message)
+            };
+        }
+    }
+
+    private static async Task<JsonObject> ProbeLegacyAlertsAsync(
+        UnifiConfiguration configuration,
+        UnifiClient client,
+        JsonNode? sites,
+        SecretRedactor redactor,
+        CancellationToken cancellationToken)
+    {
+        if (!configuration.EnableLegacyReadEnrichment)
+        {
+            return new JsonObject { ["enabled"] = false, ["status"] = "disabled" };
+        }
+
+        try
+        {
+            var site = (sites?["data"] as JsonArray)?.OfType<JsonObject>().FirstOrDefault()
+                ?? throw new ContractException("No site was available for the legacy alert probe.");
+            var internalReference = site["internalReference"]?.GetValue<string>();
+            if (string.IsNullOrWhiteSpace(internalReference))
+            {
+                throw new ContractException("The site did not include a legacy internalReference.");
+            }
+
+            var alerts = await client.ReadLegacyAlertsAsync(internalReference, cancellationToken).ConfigureAwait(false);
+            if (alerts?["data"] is not JsonArray data)
+            {
+                throw new ContractException("Legacy UniFi alert read did not return a data array.");
+            }
+
+            return new JsonObject
+            {
+                ["enabled"] = true,
+                ["status"] = "ok",
+                ["readOnly"] = true,
+                ["alertRecords"] = data.Count,
                 ["rawResponsesReturned"] = false
             };
         }
