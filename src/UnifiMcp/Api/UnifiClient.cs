@@ -186,7 +186,7 @@ public sealed class UnifiClient : IUnifiClient, IDisposable
                 var errorCode = ExtractErrorCode(content);
                 var message = response.StatusCode switch
                 {
-                    HttpStatusCode.Unauthorized => "UniFi rejected the API key (401). Verify the Network Integration key and 1Password reference.",
+                    HttpStatusCode.Unauthorized => "UniFi rejected the API key (401). Verify the Network Integration key in the mounted 1Password Environment.",
                     HttpStatusCode.Forbidden => "UniFi denied this operation (403). Verify the API key's account permissions.",
                     HttpStatusCode.TooManyRequests => "UniFi rate-limited the request (429). Try again after the reported interval.",
                     _ => $"UniFi returned HTTP {(int)response.StatusCode} ({response.ReasonPhrase}).{detail}"

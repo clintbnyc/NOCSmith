@@ -44,13 +44,13 @@ public sealed record UnifiConfiguration(
         if (requireApiKey && string.IsNullOrWhiteSpace(apiKey))
         {
             throw new ConfigurationException(
-                "UNIFI_API_KEY is missing. Launch the connector through `op run --env-file .env.op -- ...`.");
+                "UNIFI_API_KEY is missing. Set it in the process environment or launch with --env-file <path>.");
         }
 
         if (apiKey.StartsWith("op://", StringComparison.OrdinalIgnoreCase))
         {
             throw new ConfigurationException(
-                "UNIFI_API_KEY is still a 1Password reference. Launch through `op run` so it is resolved before startup.");
+                "UNIFI_API_KEY is still a 1Password reference. Use a mounted 1Password Environment file or another runtime injector.");
         }
 
         var defaultSiteId = Environment.GetEnvironmentVariable("UNIFI_DEFAULT_SITE_ID")?.Trim();
