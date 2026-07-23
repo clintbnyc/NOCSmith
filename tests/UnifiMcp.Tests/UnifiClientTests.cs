@@ -136,14 +136,14 @@ public sealed class UnifiClientTests
     }
 
     [Fact]
-    public async Task Legacy_reads_are_fixed_gets_under_the_network_proxy()
+    public async Task Private_reads_use_only_fixed_resources_and_an_empty_system_log_query()
     {
         var handler = new RecordingHandler(_ => JsonResponse(HttpStatusCode.OK, "{\"data\":[]}"));
         using var client = CreateClient(handler);
 
         await client.ReadLegacyDevicesAsync("default", CancellationToken.None);
         await client.ReadLegacyClientsAsync("default", CancellationToken.None);
-        await client.ReadLegacyAlertsAsync("default", CancellationToken.None);
+        await client.QuerySystemLogsAsync("default", CancellationToken.None);
 
         Assert.Collection(
             handler.Requests,
@@ -152,19 +152,45 @@ public sealed class UnifiClientTests
                 Assert.Equal("GET", request.Method);
                 Assert.Equal("https://unifi.nutria-newton.ts.net/proxy/network/api/s/default/stat/device", request.Uri);
                 Assert.Equal("test-api-key", request.ApiKey);
+                Assert.Null(request.Body);
             },
             request =>
             {
                 Assert.Equal("GET", request.Method);
                 Assert.Equal("https://unifi.nutria-newton.ts.net/proxy/network/api/s/default/stat/sta", request.Uri);
                 Assert.Equal("test-api-key", request.ApiKey);
+                Assert.Null(request.Body);
             },
             request =>
             {
-                Assert.Equal("GET", request.Method);
-                Assert.Equal("https://unifi.nutria-newton.ts.net/proxy/network/api/s/default/stat/alarm", request.Uri);
+                Assert.Equal("POST", request.Method);
+                Assert.Equal("https://unifi.nutria-newton.ts.net/proxy/network/v2/api/site/default/system-log/all", request.Uri);
                 Assert.Equal("test-api-key", request.ApiKey);
+                Assert.Equal("{}", request.Body);
             });
+    }
+
+    [Fact]
+    public async Task System_log_query_retries_as_a_read_operation()
+    {
+        var attempts = 0;
+        var handler = new RecordingHandler(_ =>
+        {
+            attempts++;
+            return attempts == 1
+                ? JsonResponse(HttpStatusCode.ServiceUnavailable, "{\"message\":\"wait\"}")
+                : JsonResponse(HttpStatusCode.OK, "{\"data\":[]}");
+        });
+        using var client = CreateClient(handler, (_, _) => Task.CompletedTask);
+
+        await client.QuerySystemLogsAsync("default", CancellationToken.None);
+
+        Assert.Equal(2, handler.Requests.Count);
+        Assert.All(handler.Requests, request =>
+        {
+            Assert.Equal("POST", request.Method);
+            Assert.Equal("{}", request.Body);
+        });
     }
 
     [Fact]
@@ -240,15 +266,18 @@ public sealed class UnifiClientTests
 
         public List<RecordedRequest> Requests { get; } = new();
 
-        protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken)
+        protected override async Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken)
         {
             Requests.Add(new RecordedRequest(
                 request.Method.Method,
                 request.RequestUri!.ToString(),
-                request.Headers.GetValues("X-API-Key").Single()));
-            return Task.FromResult(_response(request));
+                request.Headers.GetValues("X-API-Key").Single(),
+                request.Content is null
+                    ? null
+                    : await request.Content.ReadAsStringAsync(cancellationToken).ConfigureAwait(false)));
+            return _response(request);
         }
     }
 
-    private sealed record RecordedRequest(string Method, string Uri, string ApiKey);
+    private sealed record RecordedRequest(string Method, string Uri, string ApiKey, string? Body);
 }

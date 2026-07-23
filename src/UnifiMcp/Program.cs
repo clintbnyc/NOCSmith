@@ -35,7 +35,7 @@ try
     builder.Services.AddSingleton<ReadService>();
     builder.Services.AddSingleton<DomainReadService>();
     builder.Services.AddSingleton<LegacyReadEnrichmentService>();
-    builder.Services.AddSingleton<LegacyAlertService>();
+    builder.Services.AddSingleton<SystemLogReadService>();
     builder.Services.AddSingleton<SnapshotService>();
     builder.Services.AddHostedService<ContractProbeHostedService>();
 

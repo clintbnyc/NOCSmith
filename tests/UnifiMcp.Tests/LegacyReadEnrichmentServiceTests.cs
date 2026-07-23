@@ -307,7 +307,7 @@ public sealed class LegacyReadEnrichmentServiceTests
                 : Task.FromResult(LegacyClients?.DeepClone());
         }
 
-        public Task<JsonNode?> ReadLegacyAlertsAsync(string internalSiteReference, CancellationToken cancellationToken) =>
+        public Task<JsonNode?> QuerySystemLogsAsync(string internalSiteReference, CancellationToken cancellationToken) =>
             throw new NotSupportedException();
     }
 }

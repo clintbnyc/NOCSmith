@@ -1,4 +1,5 @@
 using System.Globalization;
+using System.Net;
 using System.Text.Json.Nodes;
 using UnifiMcp.Api;
 using UnifiMcp.Configuration;
@@ -7,10 +8,10 @@ using UnifiMcp.Security;
 
 namespace UnifiMcp.Tools;
 
-public sealed class LegacyAlertService
+public sealed class SystemLogReadService
 {
     private const int DefaultLimit = 50;
-    private const int MaximumLimit = 200;
+    private const int MaximumLimit = 50;
     private const int MaximumTextLength = 4096;
 
     private static readonly (string Destination, string[] Sources)[] ScalarFields =
@@ -18,8 +19,15 @@ public sealed class LegacyAlertService
         ("id", new[] { "_id", "id" }),
         ("eventKey", new[] { "key" }),
         ("event", new[] { "event", "event_name", "eventName", "title" }),
-        ("description", new[] { "description", "msg", "message" }),
+        ("description", new[] { "description", "message_raw", "msg", "message" }),
+        ("titleRaw", new[] { "title_raw" }),
         ("severity", new[] { "severity" }),
+        ("status", new[] { "status" }),
+        ("type", new[] { "type" }),
+        ("subcategory", new[] { "subcategory" }),
+        ("target", new[] { "target" }),
+        ("timestamp", new[] { "timestamp" }),
+        ("showOnDashboard", new[] { "show_on_dashboard", "showOnDashboard" }),
         ("datetime", new[] { "datetime" }),
         ("time", new[] { "time" }),
         ("utcTime", new[] { "utctime", "utc_time", "utcTime" }),
@@ -52,13 +60,26 @@ public sealed class LegacyAlertService
         ("duration", new[] { "duration" })
     };
 
+    private static readonly (string Destination, string[] Sources)[] ParameterFields =
+    {
+        ("ipAddress", new[] { "IP" }),
+        ("referenceUrl", new[] { "LEARN_MORE" }),
+        ("object", new[] { "OBJECT" }),
+        ("consoleName", new[] { "CONSOLE_NAME" }),
+        ("count", new[] { "COUNT" }),
+        ("platform", new[] { "PLATFORM" }),
+        ("section", new[] { "SECTION" }),
+        ("admin", new[] { "ADMIN" }),
+        ("adminActivityId", new[] { "ADMIN_ACTIVITY_ID" })
+    };
+
     private readonly UnifiConfiguration _configuration;
     private readonly ContractProvider _contracts;
     private readonly IUnifiClient _client;
     private readonly SiteResolver _siteResolver;
     private readonly SecretRedactor _redactor;
 
-    public LegacyAlertService(
+    public SystemLogReadService(
         UnifiConfiguration configuration,
         ContractProvider contracts,
         IUnifiClient client,
@@ -78,23 +99,25 @@ public sealed class LegacyAlertService
     {
         ["enabled"] = Enabled,
         ["readOnly"] = true,
+        ["queryStylePost"] = true,
         ["authentication"] = "existing X-API-Key",
-        ["fixedResource"] = "stat/alarm",
-        ["rawLegacyResponsesReturned"] = false,
+        ["fixedResource"] = "v2/api/site/{site}/system-log/all",
+        ["verifiedApplicationVersion"] = "10.4.57",
+        ["rawPrivateResponsesReturned"] = false,
         ["defaultLimit"] = DefaultLimit,
         ["maximumLimit"] = MaximumLimit
     };
 
     public async Task<ToolResponse> ReadAsync(
         string? requestedSiteId,
-        bool includeArchived,
+        bool includeRead,
         int? requestedLimit,
         CancellationToken cancellationToken)
     {
         if (!Enabled)
         {
             throw new ConfigurationException(
-                "Legacy alert reads are disabled. Set UNIFI_ENABLE_LEGACY_READ_ENRICHMENT=true to enable the fixed read-only stat/alarm resource.");
+                "Private System Logs reads are disabled. Set UNIFI_ENABLE_LEGACY_READ_ENRICHMENT=true to enable the fixed read-only system-log/all query.");
         }
 
         var limit = requestedLimit ?? DefaultLimit;
@@ -105,15 +128,24 @@ public sealed class LegacyAlertService
 
         var siteId = await _siteResolver.ResolveAsync(requestedSiteId, cancellationToken).ConfigureAwait(false);
         var internalSiteReference = await ResolveInternalSiteReferenceAsync(siteId, cancellationToken).ConfigureAwait(false);
-        var response = await _client.ReadLegacyAlertsAsync(internalSiteReference, cancellationToken).ConfigureAwait(false);
+        JsonNode? response;
+        try
+        {
+            response = await _client.QuerySystemLogsAsync(internalSiteReference, cancellationToken).ConfigureAwait(false);
+        }
+        catch (UnifiApiException exception) when (IsUnsupportedResource(exception))
+        {
+            return CreateNotSupportedResponse(siteId, exception);
+        }
+
         if (response?["data"] is not JsonArray data)
         {
-            throw new ContractException("Legacy UniFi alert read did not return a data array.");
+            throw new ContractException("Private UniFi System Logs query did not return a data array.");
         }
 
         var matching = data
             .OfType<JsonObject>()
-            .Where(record => includeArchived || !IsArchived(record))
+            .Where(record => includeRead || HasStatus(record, "NEW"))
             .ToArray();
         var records = new JsonArray(matching
             .Take(limit)
@@ -126,22 +158,58 @@ public sealed class LegacyAlertService
             ["data"] = records,
             ["_connector"] = new JsonObject
             {
-                ["source"] = "legacy-private-api",
-                ["fixedResource"] = "stat/alarm",
+                ["status"] = "ok",
+                ["source"] = "private-system-log-api",
+                ["fixedResource"] = "v2/api/site/{site}/system-log/all",
                 ["readOnly"] = true,
+                ["queryStylePost"] = true,
                 ["rawResponseReturned"] = false,
                 ["redactionApplied"] = true,
-                ["includeArchived"] = includeArchived,
+                ["includeRead"] = includeRead,
                 ["sourceRecordCount"] = data.Count,
                 ["matchingRecordCount"] = matching.Length,
-                ["truncated"] = matching.Length > records.Count,
+                ["sourcePageNumber"] = response["page_number"]?.DeepClone(),
+                ["sourceTotalElementCount"] = response["total_element_count"]?.DeepClone(),
+                ["sourceTotalPageCount"] = response["total_page_count"]?.DeepClone(),
+                ["truncated"] = matching.Length > records.Count || HasAdditionalSourcePages(response),
                 ["observedAt"] = DateTimeOffset.UtcNow.ToString("O", CultureInfo.InvariantCulture)
             }
         };
 
-        var truncation = matching.Length > records.Count ? " Results are truncated." : string.Empty;
-        return new ToolResponse($"Read {records.Count} UniFi alert(s) from the fixed legacy resource.{truncation}", result);
+        var truncation = matching.Length > records.Count || HasAdditionalSourcePages(response)
+            ? " Results are truncated to the first controller page."
+            : string.Empty;
+        return new ToolResponse($"Read {records.Count} UniFi System Log event(s) from the fixed private resource.{truncation}", result);
     }
+
+    private static ToolResponse CreateNotSupportedResponse(string siteId, UnifiApiException exception)
+    {
+        var result = new JsonObject
+        {
+            ["siteId"] = siteId,
+            ["count"] = 0,
+            ["data"] = new JsonArray(),
+            ["_connector"] = new JsonObject
+            {
+                ["status"] = "notSupported",
+                ["source"] = "private-system-log-api",
+                ["fixedResource"] = "v2/api/site/{site}/system-log/all",
+                ["readOnly"] = true,
+                ["queryStylePost"] = true,
+                ["rawResponseReturned"] = false,
+                ["httpStatus"] = (int)exception.StatusCode,
+                ["reasonCode"] = exception.Code,
+                ["reason"] = "This UniFi Network version does not expose the fixed private System Logs query to the Integration API key."
+            }
+        };
+        return new ToolResponse(
+            "Private UniFi System Logs reads are not supported by this Network version; no event data was returned.",
+            result);
+    }
+
+    private static bool IsUnsupportedResource(UnifiApiException exception) =>
+        exception.StatusCode == HttpStatusCode.NotFound &&
+        string.Equals(exception.Code, "api.err.NotFound", StringComparison.Ordinal);
 
     private async Task<string> ResolveInternalSiteReferenceAsync(string siteId, CancellationToken cancellationToken)
     {
@@ -159,7 +227,7 @@ public sealed class LegacyAlertService
         var internalReference = site?["internalReference"]?.GetValue<string>();
         if (string.IsNullOrWhiteSpace(internalReference))
         {
-            throw new ContractException($"Site {siteId} did not include a legacy internalReference.");
+            throw new ContractException($"Site {siteId} did not include the private API internalReference.");
         }
 
         return internalReference;
@@ -172,12 +240,22 @@ public sealed class LegacyAlertService
 
         var context = new JsonObject();
         CopyFields(source, context, ContextFields);
+        if (source["parameters"] is JsonObject parameters)
+        {
+            CopyFields(parameters, context, ParameterFields);
+        }
+
         if (context.Count > 0)
         {
             result["context"] = context;
         }
 
         var clients = ProjectClients(source);
+        if (clients.Count == 0 && source["parameters"] is JsonObject clientParameters)
+        {
+            clients = ProjectClients(clientParameters);
+        }
+
         if (clients.Count > 0)
         {
             result["clients"] = clients;
@@ -189,7 +267,7 @@ public sealed class LegacyAlertService
     private JsonArray ProjectClients(JsonObject source)
     {
         var projected = new JsonArray();
-        var value = source["clients"] ?? source["affected_clients"] ?? source["affectedClients"];
+        var value = source["clients"] ?? source["CLIENTS"] ?? source["affected_clients"] ?? source["affectedClients"];
         var clients = value is JsonArray array ? array : value is null ? null : new JsonArray(value.DeepClone());
         foreach (var client in clients?.Take(50) ?? Array.Empty<JsonNode?>())
         {
@@ -260,24 +338,15 @@ public sealed class LegacyAlertService
             : redacted[..MaximumTextLength] + "…";
     }
 
-    private static bool IsArchived(JsonObject record)
+    private static bool HasStatus(JsonObject record, string expected)
     {
-        if (record["archived"] is not JsonValue archived)
-        {
-            return false;
-        }
-
-        if (archived.TryGetValue<bool>(out var boolean))
-        {
-            return boolean;
-        }
-
-        if (archived.TryGetValue<int>(out var integer))
-        {
-            return integer != 0;
-        }
-
-        return archived.TryGetValue<string>(out var text) &&
-               (bool.TryParse(text, out boolean) ? boolean : string.Equals(text, "1", StringComparison.Ordinal));
+        return record["status"] is JsonValue status &&
+               status.TryGetValue<string>(out var text) &&
+               string.Equals(text, expected, StringComparison.Ordinal);
     }
+
+    private static bool HasAdditionalSourcePages(JsonNode response) =>
+        response["total_page_count"] is JsonValue totalPages &&
+        totalPages.TryGetValue<int>(out var count) &&
+        count > 1;
 }

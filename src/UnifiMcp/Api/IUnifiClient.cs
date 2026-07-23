@@ -15,5 +15,5 @@ public interface IUnifiClient
 
     Task<JsonNode?> ReadLegacyClientsAsync(string internalSiteReference, CancellationToken cancellationToken);
 
-    Task<JsonNode?> ReadLegacyAlertsAsync(string internalSiteReference, CancellationToken cancellationToken);
+    Task<JsonNode?> QuerySystemLogsAsync(string internalSiteReference, CancellationToken cancellationToken);
 }
