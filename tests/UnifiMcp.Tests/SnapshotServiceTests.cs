@@ -85,8 +85,8 @@ public sealed class SnapshotServiceTests
         var redactor = new SecretRedactor("test-api-key");
         var enrichment = new LegacyReadEnrichmentService(
             configuration,
-            contracts,
             client,
+            resolver,
             redactor,
             NullLogger<LegacyReadEnrichmentService>.Instance);
         return new SnapshotService(contracts, client, resolver, redactor, enrichment);
@@ -146,7 +146,7 @@ public sealed class SnapshotServiceTests
         public Task<JsonNode?> ReadLegacyClientsAsync(string internalSiteReference, CancellationToken cancellationToken) =>
             throw new NotSupportedException();
 
-        public Task<JsonNode?> ReadLegacyAlertsAsync(string internalSiteReference, CancellationToken cancellationToken) =>
+        public Task<JsonNode?> QuerySystemLogsAsync(string internalSiteReference, CancellationToken cancellationToken) =>
             throw new NotSupportedException();
 
         private static Task<JsonNode?> Failed(HttpStatusCode statusCode, string code) =>

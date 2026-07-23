@@ -17,23 +17,21 @@ public sealed class LegacyReadEnrichmentService
     private const int MaximumFreeTextLength = 4096;
 
     private readonly UnifiConfiguration _configuration;
-    private readonly ContractProvider _contracts;
     private readonly IUnifiClient _client;
+    private readonly SiteResolver _siteResolver;
     private readonly SecretRedactor _redactor;
     private readonly ILogger<LegacyReadEnrichmentService> _logger;
-    private readonly Dictionary<string, string> _siteReferences = new(StringComparer.Ordinal);
-    private readonly SemaphoreSlim _siteReferenceLock = new(1, 1);
 
     public LegacyReadEnrichmentService(
         UnifiConfiguration configuration,
-        ContractProvider contracts,
         IUnifiClient client,
+        SiteResolver siteResolver,
         SecretRedactor redactor,
         ILogger<LegacyReadEnrichmentService> logger)
     {
         _configuration = configuration;
-        _contracts = contracts;
         _client = client;
+        _siteResolver = siteResolver;
         _redactor = redactor;
         _logger = logger;
     }
@@ -71,7 +69,7 @@ public sealed class LegacyReadEnrichmentService
                 throw new ContractException("Legacy read enrichment requires a resolved siteId.");
             }
 
-            var internalSiteReference = await ResolveInternalSiteReferenceAsync(siteId, cancellationToken)
+            var internalSiteReference = await _siteResolver.ResolveInternalReferenceAsync(siteId, cancellationToken)
                 .ConfigureAwait(false);
             var enrichment = operationId is DeviceDetailsOperationId or DeviceOverviewOperationId
                 ? ProjectDevices(
@@ -111,42 +109,6 @@ public sealed class LegacyReadEnrichmentService
         ["normalizedUiStpRole"] = CreateUnavailableNormalizedUiStpRole(),
         ["rawLegacyResponsesReturned"] = false
     };
-
-    private async Task<string> ResolveInternalSiteReferenceAsync(string siteId, CancellationToken cancellationToken)
-    {
-        await _siteReferenceLock.WaitAsync(cancellationToken).ConfigureAwait(false);
-        try
-        {
-            if (_siteReferences.TryGetValue(siteId, out var cached))
-            {
-                return cached;
-            }
-
-            var contract = _contracts.Current;
-            var operation = contract.GetOperation("getSiteOverviewPage", requireRead: true);
-            var request = contract.ValidateAndBuild(
-                operation,
-                null,
-                new Dictionary<string, string> { ["offset"] = "0", ["limit"] = "200" },
-                null);
-            var sitesResponse = await _client.ReadAsync(request, cancellationToken).ConfigureAwait(false);
-            var site = (sitesResponse?["data"] as JsonArray)?
-                .OfType<JsonObject>()
-                .SingleOrDefault(candidate => string.Equals(candidate["id"]?.GetValue<string>(), siteId, StringComparison.Ordinal));
-            var internalReference = site?["internalReference"]?.GetValue<string>();
-            if (string.IsNullOrWhiteSpace(internalReference))
-            {
-                throw new ContractException($"Site {siteId} did not include a legacy internalReference.");
-            }
-
-            _siteReferences[siteId] = internalReference;
-            return internalReference;
-        }
-        finally
-        {
-            _siteReferenceLock.Release();
-        }
-    }
 
     private JsonObject ProjectDevices(JsonObject officialResponse, JsonNode? legacyResponse)
     {

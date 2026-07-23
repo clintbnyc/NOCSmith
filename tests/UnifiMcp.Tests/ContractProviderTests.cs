@@ -43,7 +43,7 @@ public sealed class ContractProviderTests
         public Task<JsonNode?> ReadLegacyClientsAsync(string internalSiteReference, CancellationToken cancellationToken) =>
             throw new NotSupportedException();
 
-        public Task<JsonNode?> ReadLegacyAlertsAsync(string internalSiteReference, CancellationToken cancellationToken) =>
+        public Task<JsonNode?> QuerySystemLogsAsync(string internalSiteReference, CancellationToken cancellationToken) =>
             throw new NotSupportedException();
     }
 }

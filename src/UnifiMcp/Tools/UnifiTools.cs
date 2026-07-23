@@ -25,7 +25,7 @@ public static class UnifiTools
         ContractProvider contracts,
         UnifiConfiguration configuration,
         LegacyReadEnrichmentService legacyEnrichment,
-        LegacyAlertService legacyAlerts,
+        SystemLogReadService systemLogs,
         [Description("Probe the live controller contract again before returning capabilities.")] bool refresh = false,
         CancellationToken cancellationToken = default) =>
         Guard(async () =>
@@ -59,7 +59,7 @@ public static class UnifiTools
                 ["probeWarning"] = contracts.LastProbeWarning,
                 ["knownResponseLimitations"] = ResponseMetadata.GetAllKnownLimitations(contract.Version, legacyEnrichment.Enabled),
                 ["legacyReadEnrichment"] = legacyEnrichment.Describe(),
-                ["legacyAlerts"] = legacyAlerts.Describe(),
+                ["systemLogs"] = systemLogs.Describe(),
                 ["operations"] = operations
             };
             return new ToolResponse(
@@ -105,14 +105,14 @@ public static class UnifiTools
         ReadDomain(domains, "clients", action, siteId, id, offset, limit, filter, cancellationToken);
 
     [McpServerTool(Name = "unifi_alerts", Title = "Read UniFi alerts", ReadOnly = true, Destructive = false, OpenWorld = false, UseStructuredContent = true)]
-    [Description("Read projected UniFi alert/event records from the fixed legacy stat/alarm resource. Returns UI-oriented fields when directly supplied by the controller, including event, description, severity, category, timestamp, IP address, clients, read/resolved state, help reference, and CEF log. Raw legacy records are never returned.")]
+    [Description("Read projected UniFi System Log events through one fixed query-style POST to v2/api/site/{site}/system-log/all. The operation is read-only, uses the existing Integration API key, accepts no caller-supplied request body, and never returns raw private API records.")]
     public static Task<ToolResponse> Alerts(
-        LegacyAlertService alerts,
+        SystemLogReadService systemLogs,
         [Description("Optional site UUID. Omit when exactly one site is available or UNIFI_DEFAULT_SITE_ID is set.")] string? siteId = null,
-        [Description("Include controller records marked archived. Defaults to false.")] bool includeArchived = false,
-        [Description("Maximum records to return, from 1 to 200. Defaults to 50.")] int? limit = null,
+        [Description("Include records whose controller-supplied status is READ or STALED. When false, only NEW records are returned. Defaults to true.")] bool includeRead = true,
+        [Description("Maximum records to return from the first controller page, from 1 to 50. Defaults to 50.")] int? limit = null,
         CancellationToken cancellationToken = default) =>
-        Guard(() => alerts.ReadAsync(siteId, includeArchived, limit, cancellationToken));
+        Guard(() => systemLogs.ReadAsync(siteId, includeRead, limit, cancellationToken));
 
     [McpServerTool(Name = "unifi_networks", Title = "Read UniFi networks", ReadOnly = true, Destructive = false, OpenWorld = false, UseStructuredContent = true)]
     [Description("Read UniFi networks. Actions: list, get, or references.")]

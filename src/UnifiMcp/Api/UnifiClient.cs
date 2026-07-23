@@ -87,11 +87,11 @@ public sealed class UnifiClient : IUnifiClient, IDisposable
             null,
             cancellationToken);
 
-    public Task<JsonNode?> ReadLegacyAlertsAsync(string internalSiteReference, CancellationToken cancellationToken) =>
+    public Task<JsonNode?> QuerySystemLogsAsync(string internalSiteReference, CancellationToken cancellationToken) =>
         SendWithReadRetriesAsync(
-            HttpMethod.Get,
-            BuildLegacyReadPath(internalSiteReference, "stat/alarm"),
-            null,
+            HttpMethod.Post,
+            BuildSystemLogReadPath(internalSiteReference),
+            new JsonObject(),
             cancellationToken);
 
     public void Dispose() => _httpClient.Dispose();
@@ -256,14 +256,26 @@ public sealed class UnifiClient : IUnifiClient, IDisposable
 
     private static string BuildLegacyReadPath(string internalSiteReference, string fixedResource)
     {
+        var encodedSiteReference = EncodeInternalSiteReference(internalSiteReference);
+        return $"../api/s/{encodedSiteReference}/{fixedResource}";
+    }
+
+    private static string BuildSystemLogReadPath(string internalSiteReference)
+    {
+        var encodedSiteReference = EncodeInternalSiteReference(internalSiteReference);
+        return $"../v2/api/site/{encodedSiteReference}/system-log/all";
+    }
+
+    private static string EncodeInternalSiteReference(string internalSiteReference)
+    {
         if (string.IsNullOrWhiteSpace(internalSiteReference) ||
             internalSiteReference.Length > 64 ||
             internalSiteReference.Any(character => !char.IsAsciiLetterOrDigit(character) && character is not '-' and not '_'))
         {
-            throw new ArgumentException("Legacy UniFi site reference contains unsupported characters.", nameof(internalSiteReference));
+            throw new ArgumentException("Private UniFi site reference contains unsupported characters.", nameof(internalSiteReference));
         }
 
-        return $"../api/s/{Uri.EscapeDataString(internalSiteReference)}/{fixedResource}";
+        return Uri.EscapeDataString(internalSiteReference);
     }
 
     private sealed class RetryableUnifiException : Exception

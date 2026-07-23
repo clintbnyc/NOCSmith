@@ -238,10 +238,11 @@ public sealed class LegacyReadEnrichmentServiceTests
             OpenApiContract.LoadEmbedded(),
             client,
             NullLogger<ContractProvider>.Instance);
+        var siteResolver = new SiteResolver(configuration, contracts, client);
         return new LegacyReadEnrichmentService(
             configuration,
-            contracts,
             client,
+            siteResolver,
             new SecretRedactor("test-api-key"),
             NullLogger<LegacyReadEnrichmentService>.Instance);
     }
@@ -276,6 +277,10 @@ public sealed class LegacyReadEnrichmentServiceTests
             Assert.Equal("getSiteOverviewPage", request.Operation.OperationId);
             return Task.FromResult<JsonNode?>(new JsonObject
             {
+                ["offset"] = 0,
+                ["limit"] = 200,
+                ["count"] = 1,
+                ["totalCount"] = 1,
                 ["data"] = new JsonArray
                 {
                     new JsonObject { ["id"] = SiteId, ["internalReference"] = "default" }
@@ -307,7 +312,7 @@ public sealed class LegacyReadEnrichmentServiceTests
                 : Task.FromResult(LegacyClients?.DeepClone());
         }
 
-        public Task<JsonNode?> ReadLegacyAlertsAsync(string internalSiteReference, CancellationToken cancellationToken) =>
+        public Task<JsonNode?> QuerySystemLogsAsync(string internalSiteReference, CancellationToken cancellationToken) =>
             throw new NotSupportedException();
     }
 }
