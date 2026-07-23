@@ -87,6 +87,13 @@ public sealed class UnifiClient : IUnifiClient, IDisposable
             null,
             cancellationToken);
 
+    public Task<JsonNode?> ReadLegacyAlertsAsync(string internalSiteReference, CancellationToken cancellationToken) =>
+        SendWithReadRetriesAsync(
+            HttpMethod.Get,
+            BuildLegacyReadPath(internalSiteReference, "stat/alarm"),
+            null,
+            cancellationToken);
+
     public void Dispose() => _httpClient.Dispose();
 
     private async Task<JsonNode?> SendWithReadRetriesAsync(
