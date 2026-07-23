@@ -77,7 +77,9 @@ fi
 
 mv "$staging" "$release_path"
 ln -s "releases/$release_name" "$next_link"
-mv -f "$next_link" "$current_link"
+# BSD/macOS mv follows a destination symlink without -h and would place
+# next_link inside the old release instead of replacing current.
+mv -h -f "$next_link" "$current_link"
 
 trap - EXIT HUP INT TERM
 printf 'Published UniFi MCP to %s\n' "$release_path"
