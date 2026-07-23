@@ -1,3 +1,4 @@
+using System.Globalization;
 using System.Text.Json.Nodes;
 using UnifiMcp.Configuration;
 using UnifiMcp.Contracts;
@@ -6,9 +7,13 @@ namespace UnifiMcp.Api;
 
 public sealed class SiteResolver
 {
+    private const int SitePageSize = 200;
+
     private readonly UnifiConfiguration _configuration;
     private readonly ContractProvider _contracts;
     private readonly IUnifiClient _client;
+    private readonly Dictionary<string, string> _internalReferences = new(StringComparer.Ordinal);
+    private readonly SemaphoreSlim _internalReferenceLock = new(1, 1);
 
     public SiteResolver(UnifiConfiguration configuration, ContractProvider contracts, IUnifiClient client)
     {
@@ -57,6 +62,75 @@ public sealed class SiteResolver
             ?? throw new ContractException("The single UniFi site did not include an id.");
     }
 
+    public async Task<string> ResolveInternalReferenceAsync(
+        string siteId,
+        CancellationToken cancellationToken)
+    {
+        await _internalReferenceLock.WaitAsync(cancellationToken).ConfigureAwait(false);
+        try
+        {
+            if (_internalReferences.TryGetValue(siteId, out var cached))
+            {
+                return cached;
+            }
+
+            var contract = _contracts.Current;
+            var operation = contract.GetOperation("getSiteOverviewPage", requireRead: true);
+            var offset = 0;
+            while (true)
+            {
+                var request = contract.ValidateAndBuild(
+                    operation,
+                    null,
+                    new Dictionary<string, string>
+                    {
+                        ["offset"] = offset.ToString(CultureInfo.InvariantCulture),
+                        ["limit"] = SitePageSize.ToString(CultureInfo.InvariantCulture)
+                    },
+                    null);
+                var response = await _client.ReadAsync(request, cancellationToken).ConfigureAwait(false);
+                var sites = response?["data"] as JsonArray
+                    ?? throw new ContractException("UniFi site overview did not return a data array.");
+                var site = sites
+                    .OfType<JsonObject>()
+                    .SingleOrDefault(candidate =>
+                        string.Equals(candidate["id"]?.GetValue<string>(), siteId, StringComparison.Ordinal));
+                if (site is not null)
+                {
+                    var internalReference = site["internalReference"]?.GetValue<string>();
+                    if (string.IsNullOrWhiteSpace(internalReference))
+                    {
+                        throw new ContractException($"Site {siteId} did not include the private API internalReference.");
+                    }
+
+                    _internalReferences[siteId] = internalReference;
+                    return internalReference;
+                }
+
+                var totalCount = ReadTotalCount(response)
+                    ?? throw new ContractException("UniFi site overview did not return a valid totalCount.");
+                var nextOffset = (long)offset + sites.Count;
+                if (sites.Count == 0 || nextOffset >= totalCount)
+                {
+                    break;
+                }
+
+                if (nextOffset > int.MaxValue)
+                {
+                    throw new ContractException("UniFi site pagination exceeded the supported offset range.");
+                }
+
+                offset = (int)nextOffset;
+            }
+
+            throw new ContractException($"Site {siteId} was not found in the sites available to this API key.");
+        }
+        finally
+        {
+            _internalReferenceLock.Release();
+        }
+    }
+
     public async Task<Dictionary<string, string>> ResolvePathParametersAsync(
         OperationDefinition operation,
         IReadOnlyDictionary<string, string>? supplied,
@@ -72,5 +146,22 @@ public sealed class SiteResolver
         }
 
         return result;
+    }
+
+    private static long? ReadTotalCount(JsonNode? response)
+    {
+        if (response?["totalCount"] is not JsonValue value)
+        {
+            return null;
+        }
+
+        if (value.TryGetValue<long>(out var longValue) && longValue >= 0)
+        {
+            return longValue;
+        }
+
+        return value.TryGetValue<int>(out var intValue) && intValue >= 0
+            ? intValue
+            : null;
     }
 }

@@ -74,20 +74,17 @@ public sealed class SystemLogReadService
     };
 
     private readonly UnifiConfiguration _configuration;
-    private readonly ContractProvider _contracts;
     private readonly IUnifiClient _client;
     private readonly SiteResolver _siteResolver;
     private readonly SecretRedactor _redactor;
 
     public SystemLogReadService(
         UnifiConfiguration configuration,
-        ContractProvider contracts,
         IUnifiClient client,
         SiteResolver siteResolver,
         SecretRedactor redactor)
     {
         _configuration = configuration;
-        _contracts = contracts;
         _client = client;
         _siteResolver = siteResolver;
         _redactor = redactor;
@@ -127,7 +124,9 @@ public sealed class SystemLogReadService
         }
 
         var siteId = await _siteResolver.ResolveAsync(requestedSiteId, cancellationToken).ConfigureAwait(false);
-        var internalSiteReference = await ResolveInternalSiteReferenceAsync(siteId, cancellationToken).ConfigureAwait(false);
+        var internalSiteReference = await _siteResolver
+            .ResolveInternalReferenceAsync(siteId, cancellationToken)
+            .ConfigureAwait(false);
         JsonNode? response;
         try
         {
@@ -210,28 +209,6 @@ public sealed class SystemLogReadService
     private static bool IsUnsupportedResource(UnifiApiException exception) =>
         exception.StatusCode == HttpStatusCode.NotFound &&
         string.Equals(exception.Code, "api.err.NotFound", StringComparison.Ordinal);
-
-    private async Task<string> ResolveInternalSiteReferenceAsync(string siteId, CancellationToken cancellationToken)
-    {
-        var contract = _contracts.Current;
-        var operation = contract.GetOperation("getSiteOverviewPage", requireRead: true);
-        var request = contract.ValidateAndBuild(
-            operation,
-            null,
-            new Dictionary<string, string> { ["offset"] = "0", ["limit"] = "200" },
-            null);
-        var sitesResponse = await _client.ReadAsync(request, cancellationToken).ConfigureAwait(false);
-        var site = (sitesResponse?["data"] as JsonArray)?
-            .OfType<JsonObject>()
-            .SingleOrDefault(candidate => string.Equals(candidate["id"]?.GetValue<string>(), siteId, StringComparison.Ordinal));
-        var internalReference = site?["internalReference"]?.GetValue<string>();
-        if (string.IsNullOrWhiteSpace(internalReference))
-        {
-            throw new ContractException($"Site {siteId} did not include the private API internalReference.");
-        }
-
-        return internalReference;
-    }
 
     private JsonObject Project(JsonObject source)
     {

@@ -187,7 +187,6 @@ public sealed class SystemLogReadServiceTests
             NullLogger<ContractProvider>.Instance);
         return new SystemLogReadService(
             configuration,
-            contracts,
             client,
             new SiteResolver(configuration, contracts, client),
             new SecretRedactor("test-api-key"));
@@ -209,6 +208,10 @@ public sealed class SystemLogReadServiceTests
             Assert.Equal("getSiteOverviewPage", request.Operation.OperationId);
             return Task.FromResult<JsonNode?>(new JsonObject
             {
+                ["offset"] = 0,
+                ["limit"] = 200,
+                ["count"] = 1,
+                ["totalCount"] = 1,
                 ["data"] = new JsonArray
                 {
                     new JsonObject { ["id"] = SiteId, ["internalReference"] = "default" }

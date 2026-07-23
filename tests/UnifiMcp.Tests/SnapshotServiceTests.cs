@@ -85,8 +85,8 @@ public sealed class SnapshotServiceTests
         var redactor = new SecretRedactor("test-api-key");
         var enrichment = new LegacyReadEnrichmentService(
             configuration,
-            contracts,
             client,
+            resolver,
             redactor,
             NullLogger<LegacyReadEnrichmentService>.Instance);
         return new SnapshotService(contracts, client, resolver, redactor, enrichment);
