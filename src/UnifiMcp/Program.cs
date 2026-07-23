@@ -10,7 +10,19 @@ using UnifiMcp.Security;
 using UnifiMcp.Tools;
 using UnifiMcp.Writes;
 
-if (args.Length > 0 && string.Equals(args[0], "doctor", StringComparison.OrdinalIgnoreCase))
+string[] applicationArgs;
+try
+{
+    applicationArgs = EnvironmentFileLoader.LoadAndRemoveOption(args);
+}
+catch (ConfigurationException exception)
+{
+    Console.Error.WriteLine("UniFi MCP configuration error: " + exception.Message);
+    return 2;
+}
+
+if (applicationArgs.Length > 0 &&
+    string.Equals(applicationArgs[0], "doctor", StringComparison.OrdinalIgnoreCase))
 {
     return await DoctorCommand.RunAsync(CancellationToken.None).ConfigureAwait(false);
 }
@@ -18,7 +30,7 @@ if (args.Length > 0 && string.Equals(args[0], "doctor", StringComparison.Ordinal
 try
 {
     var configuration = UnifiConfiguration.Load();
-    var builder = Host.CreateApplicationBuilder(args);
+    var builder = Host.CreateApplicationBuilder(applicationArgs);
 
     builder.Logging.ClearProviders();
     builder.Logging.AddConsole(options => options.LogToStandardErrorThreshold = LogLevel.Trace);

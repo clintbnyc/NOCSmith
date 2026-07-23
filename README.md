@@ -9,8 +9,9 @@ It does not use the stopped `/srv/unifi` Docker rollback stack, controller datab
 ## Security model
 
 - Authentication is an official Network Integration API key sent only as `X-API-Key`.
-- The API key stays in 1Password. A local ignored env file contains only an `op://` reference, and `op run` injects the resolved value into the connector process.
-- This does not store the API key in macOS Keychain, the repository, or Codex configuration. The 1Password desktop app may authorize its CLI integration using normal macOS facilities, but the connector never reads Keychain directly.
+- The API key stays in a 1Password Environment exposed through a locally mounted `.env` file. 1Password supplies the contents on demand without storing the plaintext values on disk.
+- The connector parses the mounted file itself when launched with `--env-file`. It imports only its supported `UNIFI_*` variables, does not execute the file as shell code, and does not override variables explicitly inherited from the parent process.
+- This does not store the API key in the repository or Codex configuration. The connector never reads macOS Keychain directly.
 - HTTPS uses macOS/.NET system trust plus hostname validation for `unifi.nutria-newton.ts.net`. There is no certificate-validation override and no direct-IP fallback.
 - Every normal API operation must exist in the loaded OpenAPI contract. Optional private access is separately constrained to GET `stat/device`, GET `stat/sta`, and an empty-body query-style POST to `v2/api/site/{site}/system-log/all`. The POST is a read operation used by Network 10.4.57 and accepts no caller-supplied body; arbitrary private URLs, methods, and writes are rejected.
 - Responses, exceptions, snapshots, and previews are recursively redacted. Wi-Fi credentials, API keys, tokens, passwords, pre-shared keys, and hotspot voucher codes are never returned.
@@ -19,28 +20,29 @@ It does not use the stopped `/srv/unifi` Docker rollback stack, controller datab
 ## Prerequisites
 
 - .NET SDK 10.0.302 or a compatible 10.0 patch release
-- 1Password CLI (`/opt/homebrew/bin/op`) with desktop app integration enabled
+- 1Password for Mac with an Environment and local `.env` destination
 - A UniFi Network Integration API key created in **Network > Settings > Control Plane > Integrations**
 - Tailscale access to `unifi.nutria-newton.ts.net`
 
 ## Configure 1Password
 
-Copy the example, then replace only its placeholder 1Password reference. Either ignored filename is supported operationally; `.env.op` is preferred:
+In 1Password, create an Environment for the connector and add these variables:
 
-```sh
-cp .env.op.example .env.op
-chmod 600 .env.op
-```
-
-The file must contain a reference, not a resolved secret:
-
-```dotenv
-UNIFI_API_KEY=op://YOUR_VAULT/YOUR_ITEM/YOUR_FIELD
+```text
+UNIFI_API_KEY=<Network Integration API key>
 UNIFI_BASE_URL=https://unifi.nutria-newton.ts.net/proxy/network/integration
 UNIFI_ENABLE_LEGACY_READ_ENRICHMENT=false
 ```
 
-If 1Password is locked, desktop integration is disabled, or the reference is wrong, `op run` fails before the connector receives a key. There is intentionally no service-account or plaintext fallback.
+The optional variables are `UNIFI_DEFAULT_SITE_ID` and `UNIFI_TIMEOUT_SECONDS`. The tracked `.env.example` records the supported names only and must never contain resolved secrets.
+
+From the Environment's **Destinations** tab, configure a local `.env` file at the persistent source checkout:
+
+```text
+/Users/cbeilman/source/personal/unifi-mcp/.env
+```
+
+The path is ignored by Git. 1Password mounts it as an in-memory FIFO and prompts for authorization when the connector reads it. Do not leave the mounted file open in an editor because local Environment files are not designed for concurrent readers. There is intentionally no service-account or plaintext fallback.
 
 Set `UNIFI_ENABLE_LEGACY_READ_ENRICHMENT=true` only when port labels, STP-related state/configuration fields, device/client notes and comments, or System Log events are needed. The legacy-named variable is retained for configuration compatibility and gates all three private reads. The same `X-API-Key` is used; no administrator username/password session or browser cookie is introduced. The enrichment adapter performs fixed GETs under `/proxy/network/api/s/{site}/stat/device` and `/proxy/network/api/s/{site}/stat/sta`, joins records by MAC address, and returns only:
 
@@ -65,12 +67,13 @@ dotnet test UnifiMcp.slnx --configuration Release --no-restore
 Run the live diagnostic without printing secrets:
 
 ```sh
-/opt/homebrew/bin/op --account YOUR_ACCOUNT_ID run --env-file .env.op -- \
-  /usr/local/share/dotnet/dotnet \
-  src/UnifiMcp/bin/Release/net10.0/unifi-mcp.dll doctor
+/usr/local/share/dotnet/dotnet \
+  src/UnifiMcp/bin/Release/net10.0/unifi-mcp.dll \
+  --env-file=/Users/cbeilman/source/personal/unifi-mcp/.env \
+  doctor
 ```
 
-Use `--env-file .env` instead if that is the ignored filename you created. If only one 1Password account is configured, `--account YOUR_ACCOUNT_ID` may be omitted. The diagnostic checks configuration, successful secret injection, normal TLS validation, `/v1/info`, contract selection, site discovery, private enrichment, and the fixed System Logs query.
+`--env-file /absolute/path/.env` is also accepted. The diagnostic checks configuration, successful secret injection, normal TLS validation, `/v1/info`, contract selection, site discovery, private enrichment, and the fixed System Logs query.
 
 ## MCP tools
 
@@ -128,7 +131,7 @@ A worktree build path disappears when that worktree is removed. Before cleaning 
 ./scripts/publish-local.sh
 ```
 
-The script restores locked dependencies, runs the complete Release test suite, publishes into a new versioned directory under `~/source/personal/mcp-connectors/unifi-mcp/releases/`, and atomically switches the `current` symlink only after all prior steps succeed. It never copies `.env.op` or resolved secrets. Existing releases remain available for manual rollback; the script does not prune them.
+The script restores locked dependencies, runs the complete Release test suite, publishes into a new versioned directory under `~/source/personal/mcp-connectors/unifi-mcp/releases/`, and atomically switches the `current` symlink only after all prior steps succeed. It never copies `.env` or resolved secrets. Existing releases remain available for manual rollback; the script does not prune them.
 
 An alternate absolute destination may be supplied as the first argument. The default durable entrypoint is:
 
@@ -136,38 +139,29 @@ An alternate absolute destination may be supplied as the first argument. The def
 /Users/cbeilman/source/personal/mcp-connectors/unifi-mcp/current/unifi-mcp
 ```
 
-Run the published diagnostic with the ignored 1Password reference from the persistent source checkout:
+Run the published diagnostic with the locally mounted 1Password Environment file:
 
 ```sh
-/opt/homebrew/bin/op --account YOUR_ACCOUNT_ID run \
-  --env-file=/Users/cbeilman/source/personal/unifi-mcp/.env.op \
-  -- \
-  /Users/cbeilman/source/personal/mcp-connectors/unifi-mcp/current/unifi-mcp \
+/Users/cbeilman/source/personal/mcp-connectors/unifi-mcp/current/unifi-mcp \
+  --env-file=/Users/cbeilman/source/personal/unifi-mcp/.env \
   doctor
 ```
 
-After the published `doctor` succeeds, register the stdio server without putting the key or its `op://` reference in Codex configuration:
+After the published `doctor` succeeds, register the stdio server without putting the key in Codex configuration:
 
 ```sh
 codex mcp add unifi -- \
-  /opt/homebrew/bin/op --account YOUR_ACCOUNT_ID run \
-  --env-file=/Users/cbeilman/source/personal/unifi-mcp/.env.op \
-  -- \
-  /Users/cbeilman/source/personal/mcp-connectors/unifi-mcp/current/unifi-mcp
+  /Users/cbeilman/source/personal/mcp-connectors/unifi-mcp/current/unifi-mcp \
+  --env-file=/Users/cbeilman/source/personal/unifi-mcp/.env
 ```
 
 Equivalent `~/.codex/config.toml` settings are:
 
 ```toml
 [mcp_servers.unifi]
-command = "/opt/homebrew/bin/op"
+command = "/Users/cbeilman/source/personal/mcp-connectors/unifi-mcp/current/unifi-mcp"
 args = [
-  "--account",
-  "YOUR_ACCOUNT_ID",
-  "run",
-  "--env-file=/Users/cbeilman/source/personal/unifi-mcp/.env.op",
-  "--",
-  "/Users/cbeilman/source/personal/mcp-connectors/unifi-mcp/current/unifi-mcp",
+  "--env-file=/Users/cbeilman/source/personal/unifi-mcp/.env",
 ]
 cwd = "/Users/cbeilman/source/personal/mcp-connectors/unifi-mcp/current"
 startup_timeout_sec = 30
@@ -175,4 +169,4 @@ tool_timeout_sec = 90
 default_tools_approval_mode = "writes"
 ```
 
-Use `.env` in the path if that is your chosen ignored file. Restart Codex after registration. The durable Mac configuration and runbook should be updated only after `doctor` and representative MCP calls succeed.
+Restart Codex after registration and approve the 1Password prompt when the connector first reads the mount. The durable Mac configuration and runbook should be updated only after `doctor` and representative MCP calls succeed.
