@@ -100,13 +100,14 @@ public static class DoctorCommand
 
             var devices = await client.ReadLegacyDevicesAsync(internalReference, cancellationToken).ConfigureAwait(false);
             var clients = await client.ReadPrivateClientsAsync(internalReference, cancellationToken).ConfigureAwait(false);
+            var clientRecordCount = CountPrivateClientRecords(clients);
             return new JsonObject
             {
                 ["enabled"] = true,
                 ["status"] = "ok",
                 ["readOnly"] = true,
                 ["deviceRecords"] = (devices?["data"] as JsonArray)?.Count ?? 0,
-                ["clientRecords"] = (clients as JsonArray)?.Count ?? 0,
+                ["clientRecords"] = clientRecordCount,
                 ["deviceSource"] = "legacy-private-api",
                 ["clientSource"] = "private-v2-api",
                 ["rawResponsesReturned"] = false
@@ -126,6 +127,22 @@ public static class DoctorCommand
                 ["error"] = redactor.Redact(exception.Message)
             };
         }
+    }
+
+    internal static int CountPrivateClientRecords(JsonNode? response)
+    {
+        if (response is JsonArray records)
+        {
+            return records.Count;
+        }
+
+        if (response?["data"] is JsonArray data)
+        {
+            return data.Count;
+        }
+
+        throw new ContractException(
+            "Private UniFi client read did not return an array or an object containing a data array.");
     }
 
     private static async Task<JsonObject> ProbeSystemLogsAsync(
