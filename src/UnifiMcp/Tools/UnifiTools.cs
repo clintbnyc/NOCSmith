@@ -27,6 +27,7 @@ public static class UnifiTools
         LegacyReadEnrichmentService legacyEnrichment,
         SiteManagerReadService siteManager,
         SiteManagerDeviceEnrichmentService siteManagerEnrichment,
+        ClientGroupReadService clientGroups,
         SystemLogReadService systemLogs,
         [Description("Probe the live controller contract again before returning capabilities.")] bool refresh = false,
         CancellationToken cancellationToken = default) =>
@@ -63,6 +64,7 @@ public static class UnifiTools
                 ["legacyReadEnrichment"] = legacyEnrichment.Describe(),
                 ["siteManager"] = siteManager.Describe(),
                 ["siteManagerDeviceEnrichment"] = siteManagerEnrichment.Describe(),
+                ["clientGroups"] = clientGroups.Describe(),
                 ["systemLogs"] = systemLogs.Describe(),
                 ["operations"] = operations
             };
@@ -141,6 +143,16 @@ public static class UnifiTools
     [Description("Read connected UniFi clients. Actions: list or get. Client type and uplink are controller-reported observation points; responses warn when third-party bridging prevents a reliable physical attachment inference. Opt-in legacy read enrichment projects client notes/comments.")]
     public static Task<ToolResponse> Clients(DomainReadService domains, string action, string? siteId = null, string? id = null, int? offset = null, int? limit = null, string? filter = null, CancellationToken cancellationToken = default) =>
         ReadDomain(domains, "clients", action, siteId, id, offset, limit, filter, cancellationToken);
+
+    [McpServerTool(Name = "unifi_client_groups", Title = "Read UniFi client groups", ReadOnly = true, Destructive = false, OpenWorld = false, UseStructuredContent = true)]
+    [Description("Read UniFi Network client groups through one fixed private GET. Actions: list or audit. Audit joins configured group memberships to connected clients and identifies connected clients with no group assignment. No group writes are exposed.")]
+    public static Task<ToolResponse> ClientGroups(
+        ClientGroupReadService clientGroups,
+        [Description("Use list or audit.")] string action = "list",
+        [Description("Optional site UUID. Omit when exactly one site is available or UNIFI_DEFAULT_SITE_ID is set.")] string? siteId = null,
+        [Description("Include the configured member MAC addresses for each group. Defaults to false.")] bool includeMembers = false,
+        CancellationToken cancellationToken = default) =>
+        Guard(() => clientGroups.ReadAsync(action, siteId, includeMembers, cancellationToken));
 
     [McpServerTool(Name = "unifi_alerts", Title = "Read UniFi alerts", ReadOnly = true, Destructive = false, OpenWorld = false, UseStructuredContent = true)]
     [Description("Read projected UniFi System Log events through one fixed query-style POST to v2/api/site/{site}/system-log/all. The operation is read-only, uses the existing Integration API key, accepts no caller-supplied request body, and never returns raw private API records.")]

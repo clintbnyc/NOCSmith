@@ -51,6 +51,12 @@ public static class DoctorCommand
                 sites,
                 redactor,
                 cancellationToken).ConfigureAwait(false);
+            var clientGroups = await ProbeClientGroupsAsync(
+                configuration,
+                client,
+                provider,
+                redactor,
+                cancellationToken).ConfigureAwait(false);
             var systemLogs = await ProbeSystemLogsAsync(
                 configuration,
                 client,
@@ -75,6 +81,7 @@ public static class DoctorCommand
                 ["contractStatus"] = provider.Status,
                 ["contractWarning"] = provider.LastProbeWarning,
                 ["legacyReadEnrichment"] = legacyReadEnrichment,
+                ["clientGroups"] = clientGroups,
                 ["systemLogs"] = systemLogs,
                 ["siteManager"] = siteManagerStatus,
                 ["application"] = redactor.Redact(info),
@@ -252,6 +259,60 @@ public static class DoctorCommand
 
     internal static int CountPrivateClientRecords(JsonNode? response) =>
         PrivateReadResponseParser.ReadRecords(response).Count;
+
+    private static async Task<JsonObject> ProbeClientGroupsAsync(
+        UnifiConfiguration configuration,
+        UnifiClient client,
+        ContractProvider contracts,
+        SecretRedactor redactor,
+        CancellationToken cancellationToken)
+    {
+        if (!configuration.EnableLegacyReadEnrichment)
+        {
+            return new JsonObject { ["enabled"] = false, ["status"] = "disabled" };
+        }
+
+        try
+        {
+            var siteResolver = new SiteResolver(configuration, contracts, client);
+            var service = new Tools.ClientGroupReadService(
+                configuration,
+                client,
+                contracts,
+                siteResolver,
+                redactor);
+            var response = await service
+                .ReadAsync("audit", configuration.DefaultSiteId, includeMembers: false, cancellationToken)
+                .ConfigureAwait(false);
+            var data = response.Data as JsonObject
+                ?? throw new ContractException("Client-group audit did not return an object.");
+            return new JsonObject
+            {
+                ["enabled"] = true,
+                ["status"] = "ok",
+                ["readOnly"] = true,
+                ["groupRecords"] = data["groupCount"]?.DeepClone(),
+                ["connectedClientRecords"] = data["connectedClientCount"]?.DeepClone(),
+                ["ungroupedConnectedClientRecords"] = data["ungroupedConnectedClientCount"]?.DeepClone(),
+                ["source"] = "private-v2-network-members-groups-api",
+                ["rawResponsesReturned"] = false
+            };
+        }
+        catch (TaskCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+            throw;
+        }
+        catch (Exception exception) when (exception is UnifiApiException or ContractException or HttpRequestException or TaskCanceledException or InvalidOperationException)
+        {
+            return new JsonObject
+            {
+                ["enabled"] = true,
+                ["status"] = "failed",
+                ["readOnly"] = true,
+                ["error"] = redactor.Redact(exception.Message)
+            };
+        }
+    }
 
     private static async Task<JsonObject> ProbeSystemLogsAsync(
         UnifiConfiguration configuration,

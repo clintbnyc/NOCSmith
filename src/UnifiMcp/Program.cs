@@ -52,6 +52,7 @@ try
     builder.Services.AddSingleton<LegacyReadEnrichmentService>();
     builder.Services.AddSingleton<SiteManagerReadService>();
     builder.Services.AddSingleton<SiteManagerDeviceEnrichmentService>();
+    builder.Services.AddSingleton<ClientGroupReadService>();
     builder.Services.AddSingleton<SystemLogReadService>();
     builder.Services.AddSingleton<SnapshotService>();
     builder.Services.AddHostedService<ContractProbeHostedService>();

@@ -15,5 +15,7 @@ public interface IUnifiClient
 
     Task<JsonNode?> ReadPrivateClientsAsync(string internalSiteReference, CancellationToken cancellationToken);
 
+    Task<JsonNode?> ReadNetworkMembersGroupsAsync(string internalSiteReference, CancellationToken cancellationToken);
+
     Task<JsonNode?> QuerySystemLogsAsync(string internalSiteReference, CancellationToken cancellationToken);
 }
