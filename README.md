@@ -35,6 +35,10 @@ In 1Password, create an Environment for the connector and add these variables:
 UNIFI_API_KEY=<Network Integration API key>
 UNIFI_BASE_URL=https://unifi.nutria-newton.ts.net/proxy/network/integration
 UNIFI_ENABLE_LEGACY_READ_ENRICHMENT=false
+UNIFI_ENABLE_CLIENT_JOURNAL=false
+# UNIFI_CLIENT_JOURNAL_DB_PATH=/absolute/private/path/client-journal.db
+# UNIFI_CLIENT_JOURNAL_RETENTION_DAYS=90
+# UNIFI_CLIENT_JOURNAL_MAX_MIB=256
 UNIFI_SITE_API_KEY=<optional Site Manager API key>
 UNIFI_SITE_MANAGER_LOCAL_HOST_ID=<optional explicit host ID>
 ```
@@ -118,6 +122,92 @@ UniFi Wi-Fi/AP association, gateway-derived network context, or other
 connection telemetry. The connector reports those fields as unavailable and
 does not infer a direct cable, radio, VLAN, or physical path through eero.
 
+### Optional client observation journal
+
+The client journal is a separate, opt-in local data grain. It does not change
+`unifi_clients list`, `unifi_clients history`, or `unifi_client_groups audit`.
+It is disabled by default, creates nothing at process startup, and never
+collects automatically. Enable it only with both:
+
+```text
+UNIFI_ENABLE_CLIENT_JOURNAL=true
+UNIFI_CLIENT_JOURNAL_DB_PATH=/absolute/private/path/client-journal.db
+```
+
+`UNIFI_CLIENT_JOURNAL_RETENTION_DAYS` defaults to 90 and accepts 1–3650.
+`UNIFI_CLIENT_JOURNAL_MAX_MIB` defaults to 256 and accepts 16–4096. Explicit
+collection also requires `UNIFI_ENABLE_LEGACY_READ_ENRICHMENT=true`; health
+and journal queries need only the journal gate and path.
+
+The parent directory must be local, non-symlinked, and private (`0700` or
+stricter). The connector creates a missing parent as `0700` and maintains the
+database, WAL, and SHM files as `0600`. The journal is not encrypted: it stores
+projected household metadata such as normalized lowercase MAC addresses,
+normalized IP addresses, bounded redacted names, timestamps, group IDs/names,
+and field provenance in cleartext. It never stores controller responses,
+request bodies, credentials, tokens, controller-internal IDs, traffic
+counters, arbitrary JSON, or unrelated fields.
+
+`unifi_collect_client_observations` is the only collection entrypoint. It
+fetches controller data before opening the journal transaction, records
+official connected state, bounded UI history, and configured group membership
+as independent sources, and atomically persists the normalized result. Each
+source is `complete`, `partial`, or `failed`; records validated before a source
+became partial are positive evidence, but absence from an incomplete source is
+never interpreted as disconnected, offline, no longer configured, or removed.
+The collection result contains identifiers, timestamps, safe per-source
+status/count/error metadata, and no client rows.
+
+The journal query tools are:
+
+- `unifi_client_changes`: source-specific complete baselines, with matching
+  windows for UI-history comparisons. Omit `sinceTimestamp` for the previous
+  successful source snapshot. Results use `connectedObserved`,
+  `noLongerConnected`, `enteredHistoryWindow`, `leftHistoryWindow`,
+  `fieldChanged`, `groupRenamed`, `membershipAdded`, and
+  `membershipNoLongerConfigured`; the term “removed” is not used. Offline
+  evidence is derived only when official-current and UI-history sources are
+  both complete in the same collection.
+- `unifi_client_observation_history`: chronological source-grained evidence
+  for one normalized MAC, including source completeness and field provenance.
+  Gaps carry no inferred state.
+- `unifi_client_journal_health`: a filesystem-nonmutating inspection that
+  returns `disabled`, `notInitialized`, `healthy`, `migrationRequired`,
+  `newerSchemaNotSupported`, `unsafePath`, `corrupt`, or `oversized`, plus schema/WAL,
+  size/retention, collection success, and quarantine metadata without client
+  rows.
+- `unifi_recover_client_journal`: the only recovery path. It requires and
+  rechecks the corruption fingerprint from health, quarantines the active
+  DB/WAL/SHM set, initializes a fresh migrated journal, and restores the old
+  set if initialization fails. Recovery is never automatic.
+
+All query operations use stable ordering and bounded pagination (default 100,
+maximum 200) with total, returned, offset, truncation, and next-offset
+metadata. Ordered checksummed migrations run transactionally only during
+explicit collection or recovery. Read-only tools never create or migrate a
+database and fail closed on unknown newer schemas. SQLite runs in WAL mode
+with foreign keys, `synchronous=FULL`, incremental auto-vacuum, a bounded busy
+timeout, separate pooled connections, and a process-local write semaphore.
+Retention and size pruning delete whole collections; the configured active
+DB/WAL/SHM cap takes precedence.
+
+The locked dependency graph uses `Microsoft.Data.Sqlite` 10.0.10 and explicitly
+pins `SQLitePCLRaw.bundle_e_sqlite3` 2.1.12. The explicit native-bundle pin
+avoids the vulnerable 2.1.11 native SQLite package otherwise selected by the
+10.0.10 metapackage; vulnerability warnings remain errors and are not
+suppressed.
+
+#### Future scheduled collection proposal
+
+No daemon, timer, collection CLI command, LaunchAgent, or runtime registration
+is included in this phase. A separate, explicitly approved phase could publish
+a stable `journal collect` CLI entrypoint and run it hourly through a
+LaunchAgent. That design must handle overlap locking, sleep and missed runs,
+redacted rotating logs, retention growth, rollback, and mac-runbook updates.
+The current interactive 1Password-mounted FIFO cannot be assumed to work for
+unattended execution; scheduling remains blocked until a separate
+secret-handoff design is approved and live-verified.
+
 `unifi_alerts` separately sends `{}` to `/proxy/network/v2/api/site/{site}/system-log/all`. Although the endpoint uses POST, it is a read-only collection query: callers cannot supply a body, path, or method. Network 10.4.57 was live-verified to accept the existing Integration API key and return up to 50 records with pagination metadata. The projection preserves controller-supplied event/key, raw description/title, severity, status, category/subcategory, type, target, timestamp, and a small allowlist from `parameters`, including IP address, affected clients, learn-more reference, object, console, count, platform, section, and administrator identifiers. Raw parameter objects and unrelated fields are discarded.
 
 The projected STP values are controller-native evidence, not a normalized UniFi UI role. Live verification found no reliable direct field for the UI's **Edge** versus **Participant** column, and `stpState`, `isUplink`, `stpPortMode`, and `settingPreference` are not individually or collectively treated as a safe mapping. The enrichment therefore reports `normalizedUiStpRole.status` as `unavailable` and does not emit `uiStpRole`.
@@ -139,15 +229,16 @@ Run the live diagnostic without printing secrets:
   doctor
 ```
 
-`--env-file /absolute/path/.env` is also accepted. The diagnostic checks configuration, successful secret injection, normal TLS validation, `/v1/info`, contract selection, site discovery, private enrichment, the fixed one-day client-history classification, the fixed client-group audit, the fixed System Logs query, and—when configured—read-only Site Manager fleet access plus explicit local-host mapping. A configured host ID that is not visible to the Site Manager account makes Site Manager doctor status `degraded`.
+`--env-file /absolute/path/.env` is also accepted. The diagnostic checks configuration, successful secret injection, normal TLS validation, `/v1/info`, contract selection, site discovery, private enrichment, the fixed one-day client-history classification, the fixed client-group audit, the fixed System Logs query, non-mutating client-journal health, and—when configured—read-only Site Manager fleet access plus explicit local-host mapping. A configured host ID that is not visible to the Site Manager account makes Site Manager doctor status `degraded`.
 
 ## MCP tools
 
-The server exposes 30 tools:
+The server exposes 35 tools:
 
 - Discovery, snapshots, and fleet data: `unifi_get_capabilities`, `unifi_get_site_snapshot`, `unifi_site_manager`, `unifi_isp_metrics`
 - Grouped reads: `unifi_sites`, `unifi_devices`, `unifi_clients`, `unifi_client_groups`, `unifi_alerts`, `unifi_networks`, `unifi_wifi`, `unifi_hotspot`, `unifi_firewall`, `unifi_acl`, `unifi_switching`, `unifi_dns`, `unifi_traffic_lists`, `unifi_supporting_resources`
 - Contract-defined read escape hatch: `unifi_read_operation`
+- Client journal: `unifi_collect_client_observations`, `unifi_client_changes`, `unifi_client_observation_history`, `unifi_client_journal_health`, `unifi_recover_client_journal`
 - Domain previews: `unifi_preview_device_change`, `unifi_preview_client_change`, `unifi_preview_network_change`, `unifi_preview_wifi_change`, `unifi_preview_hotspot_change`, `unifi_preview_firewall_change`, `unifi_preview_acl_change`, `unifi_preview_dns_change`, `unifi_preview_traffic_list_change`
 - Contract-defined write preview: `unifi_preview_operation`
 - Confirmed apply: `unifi_apply_change`
@@ -175,7 +266,11 @@ All configuration changes use the same two-step protocol:
 
 Tokens are process-local, single-use, capped, and expire after five minutes. A failed drift check consumes the token. PUT domain tools treat the supplied body as changes over the current resource: absent fields are preserved, explicit `null` clears a field, nested objects merge, and arrays replace arrays. Network deletes with known references require an explicit preview override. Bulk voucher deletion resolves the exact matching voucher IDs and refuses previews that cannot fit into a single verified page.
 
-The MCP metadata marks reads and previews read-only. `unifi_apply_change` is marked writable, destructive, and non-idempotent so Codex can require conservative approval.
+The MCP metadata marks reads and previews read-only.
+`unifi_collect_client_observations` is a local, non-destructive,
+non-idempotent write. `unifi_recover_client_journal` and
+`unifi_apply_change` are writable, destructive, and non-idempotent so Codex
+can require conservative approval.
 
 ## OpenAPI contract
 

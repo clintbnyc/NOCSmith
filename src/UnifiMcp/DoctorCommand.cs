@@ -5,6 +5,7 @@ using Microsoft.Extensions.Logging.Abstractions;
 using UnifiMcp.Api;
 using UnifiMcp.Configuration;
 using UnifiMcp.Contracts;
+using UnifiMcp.Journal;
 using UnifiMcp.Security;
 using UnifiMcp.Tools;
 
@@ -74,6 +75,7 @@ public static class DoctorCommand
                 siteManager,
                 redactor,
                 cancellationToken).ConfigureAwait(false);
+            var journalHealth = new ClientJournalStore(configuration).Inspect();
 
             var result = new JsonObject
             {
@@ -89,6 +91,20 @@ public static class DoctorCommand
                 ["legacyReadEnrichment"] = legacyReadEnrichment,
                 ["clientGroups"] = clientGroups,
                 ["clientHistory"] = clientHistory,
+                ["clientJournal"] = new JsonObject
+                {
+                    ["state"] = journalHealth.Oversized && journalHealth.State == "healthy"
+                        ? "oversized"
+                        : journalHealth.State,
+                    ["enabled"] = configuration.EnableClientJournal,
+                    ["schemaVersion"] = journalHealth.SchemaVersion,
+                    ["walMode"] = journalHealth.WalMode,
+                    ["activeBytes"] = journalHealth.ActiveBytes,
+                    ["retentionDays"] = journalHealth.RetentionDays,
+                    ["maximumMib"] = journalHealth.MaximumMib,
+                    ["quarantineSetCount"] = journalHealth.Quarantine.Count,
+                    ["readOnlyInspection"] = true
+                },
                 ["systemLogs"] = systemLogs,
                 ["siteManager"] = siteManagerStatus,
                 ["application"] = redactor.Redact(info),

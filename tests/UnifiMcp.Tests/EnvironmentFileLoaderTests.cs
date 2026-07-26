@@ -12,6 +12,10 @@ public sealed class EnvironmentFileLoaderTests
         "UNIFI_DEFAULT_SITE_ID",
         "UNIFI_TIMEOUT_SECONDS",
         "UNIFI_ENABLE_LEGACY_READ_ENRICHMENT",
+        "UNIFI_ENABLE_CLIENT_JOURNAL",
+        "UNIFI_CLIENT_JOURNAL_DB_PATH",
+        "UNIFI_CLIENT_JOURNAL_RETENTION_DAYS",
+        "UNIFI_CLIENT_JOURNAL_MAX_MIB",
         "UNIFI_SITE_API_KEY",
         "UNIFI_SITE_MANAGER_LOCAL_HOST_ID",
         "UNRELATED_VARIABLE"
@@ -27,6 +31,10 @@ public sealed class EnvironmentFileLoaderTests
             "UNIFI_DEFAULT_SITE_ID=6cc5f1b8-cec7-4c50-9b92-805b73892756\n" +
             "UNIFI_TIMEOUT_SECONDS=45\n" +
             "UNIFI_ENABLE_LEGACY_READ_ENRICHMENT=true\n" +
+            "UNIFI_ENABLE_CLIENT_JOURNAL=true\n" +
+            "UNIFI_CLIENT_JOURNAL_DB_PATH=/tmp/unifi-journal/client.db\n" +
+            "UNIFI_CLIENT_JOURNAL_RETENTION_DAYS=120\n" +
+            "UNIFI_CLIENT_JOURNAL_MAX_MIB=512\n" +
             "UNIFI_SITE_API_KEY=site-manager-key\n" +
             "UNIFI_SITE_MANAGER_LOCAL_HOST_ID=host:123\n" +
             "UNRELATED_VARIABLE=must-not-be-imported\n");
@@ -41,6 +49,12 @@ public sealed class EnvironmentFileLoaderTests
             Environment.GetEnvironmentVariable("UNIFI_BASE_URL"));
         Assert.Equal("45", Environment.GetEnvironmentVariable("UNIFI_TIMEOUT_SECONDS"));
         Assert.Equal("true", Environment.GetEnvironmentVariable("UNIFI_ENABLE_LEGACY_READ_ENRICHMENT"));
+        Assert.Equal("true", Environment.GetEnvironmentVariable("UNIFI_ENABLE_CLIENT_JOURNAL"));
+        Assert.Equal(
+            "/tmp/unifi-journal/client.db",
+            Environment.GetEnvironmentVariable("UNIFI_CLIENT_JOURNAL_DB_PATH"));
+        Assert.Equal("120", Environment.GetEnvironmentVariable("UNIFI_CLIENT_JOURNAL_RETENTION_DAYS"));
+        Assert.Equal("512", Environment.GetEnvironmentVariable("UNIFI_CLIENT_JOURNAL_MAX_MIB"));
         Assert.Equal("site-manager-key", Environment.GetEnvironmentVariable("UNIFI_SITE_API_KEY"));
         Assert.Equal("host:123", Environment.GetEnvironmentVariable("UNIFI_SITE_MANAGER_LOCAL_HOST_ID"));
         Assert.Null(Environment.GetEnvironmentVariable("UNRELATED_VARIABLE"));

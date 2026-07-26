@@ -6,6 +6,7 @@ using System.Text.RegularExpressions;
 using UnifiMcp.Api;
 using UnifiMcp.Configuration;
 using UnifiMcp.Contracts;
+using UnifiMcp.Journal;
 using UnifiMcp.Security;
 
 namespace UnifiMcp.Tools;
@@ -36,6 +37,7 @@ public sealed partial class ClientHistoryReadService
     private readonly ContractProvider _contracts;
     private readonly SiteResolver _siteResolver;
     private readonly SecretRedactor _redactor;
+    private readonly ClientObservationCollector _collector;
 
     public ClientHistoryReadService(
         UnifiConfiguration configuration,
@@ -49,6 +51,14 @@ public sealed partial class ClientHistoryReadService
         _contracts = contracts;
         _siteResolver = siteResolver;
         _redactor = redactor;
+        _collector = new ClientObservationCollector(
+            configuration,
+            client,
+            contracts,
+            siteResolver,
+            redactor,
+            new SystemClientJournalClock(),
+            new GuidClientCollectionIdGenerator());
     }
 
     public bool Enabled => _configuration.EnableLegacyReadEnrichment;
@@ -107,125 +117,97 @@ public sealed partial class ClientHistoryReadService
             throw new ContractException($"limit must be between 1 and {MaximumLimit}.");
         }
 
-        var observedAt = DateTimeOffset.UtcNow;
-        var siteId = await _siteResolver.ResolveAsync(requestedSiteId, cancellationToken).ConfigureAwait(false);
-        var internalSiteReference = await _siteResolver
-            .ResolveInternalReferenceAsync(siteId, cancellationToken)
+        var collection = await _collector
+            .CollectForHistoryAsync(requestedSiteId, historyHours, cancellationToken)
             .ConfigureAwait(false);
+        var observedAt = collection.StartedAt;
+        var siteId = collection.SiteId;
 
-        IReadOnlyList<HistoryClient> history;
-        try
+        if (collection.History.Status != CollectionSourceStatus.Complete)
         {
-            var historyResponse = await _client
-                .ReadClientHistoryAsync(internalSiteReference, historyHours, cancellationToken)
-                .ConfigureAwait(false);
-            history = ProjectHistory(historyResponse, historyHours, observedAt);
-        }
-        catch (UnifiApiException exception) when (IsUnsupportedResource(exception))
-        {
+            var exception = ToApiException(collection.History);
+            if (exception is not null && !IsUnsupportedResource(exception))
+            {
+                throw exception;
+            }
+
             return CreateNotSupportedResponse(
                 siteId,
                 historyHours,
                 offset,
                 limit,
                 observedAt,
-                "endpointUnavailable",
-                "This UniFi Network version does not expose the fixed private client-history GET to the Integration API key.",
+                collection.History.ErrorCode == "endpointUnavailable"
+                    ? "endpointUnavailable"
+                    : "unrecognizedResponseContract",
+                collection.History.ErrorCode == "endpointUnavailable"
+                    ? "This UniFi Network version does not expose the fixed private client-history GET to the Integration API key."
+                    : "The fixed private client-history GET returned an unrecognized response contract; no client data was returned.",
                 "private-v2-client-history-api",
                 FixedHistoryResource,
                 operationId: null,
                 exception);
         }
-        catch (ContractException)
-        {
-            return CreateNotSupportedResponse(
-                siteId,
-                historyHours,
-                offset,
-                limit,
-                observedAt,
-                "unrecognizedResponseContract",
-                "The fixed private client-history GET returned an unrecognized response contract; no client data was returned.",
-                "private-v2-client-history-api",
-                FixedHistoryResource,
-                operationId: null,
-                exception: null);
-        }
 
-        ConnectedReadResult connected;
-        try
+        if (collection.Connected.Status != CollectionSourceStatus.Complete)
         {
-            connected = await ReadConnectedClientsAsync(siteId, cancellationToken).ConfigureAwait(false);
-        }
-        catch (UnifiApiException exception) when (IsUnsupportedResource(exception))
-        {
+            var exception = ToApiException(collection.Connected);
+            if (exception is not null && !IsUnsupportedResource(exception))
+            {
+                throw exception;
+            }
+
             return CreateNotSupportedResponse(
                 siteId,
                 historyHours,
                 offset,
                 limit,
                 observedAt,
-                "requiredSourceUnavailable",
-                "The official connected-client overview required for current-state classification is unavailable.",
+                exception is null
+                    ? "unrecognizedResponseContract"
+                    : "requiredSourceUnavailable",
+                exception is null
+                    ? "The official connected-client overview returned an unrecognized pagination or record contract; no client data was returned."
+                    : "The official connected-client overview required for current-state classification is unavailable.",
                 "official-network-integration-api",
                 fixedResource: null,
                 ConnectedClientOperationId,
                 exception);
         }
-        catch (ContractException)
-        {
-            return CreateNotSupportedResponse(
-                siteId,
-                historyHours,
-                offset,
-                limit,
-                observedAt,
-                "unrecognizedResponseContract",
-                "The official connected-client overview returned an unrecognized pagination or record contract; no client data was returned.",
-                "official-network-integration-api",
-                fixedResource: null,
-                ConnectedClientOperationId,
-                exception: null);
-        }
 
-        IReadOnlyList<ClientGroup> groups;
-        try
+        if (collection.Groups.Status != CollectionSourceStatus.Complete)
         {
-            var groupResponse = await _client
-                .ReadNetworkMembersGroupsAsync(internalSiteReference, cancellationToken)
-                .ConfigureAwait(false);
-            groups = ProjectGroups(groupResponse);
-        }
-        catch (UnifiApiException exception) when (IsUnsupportedResource(exception))
-        {
+            var exception = ToApiException(collection.Groups);
+            if (exception is not null && !IsUnsupportedResource(exception))
+            {
+                throw exception;
+            }
+
             return CreateNotSupportedResponse(
                 siteId,
                 historyHours,
                 offset,
                 limit,
                 observedAt,
-                "requiredSourceUnavailable",
-                "The fixed private client-group GET required for configured-membership classification is unavailable.",
+                exception is null
+                    ? "unrecognizedResponseContract"
+                    : "requiredSourceUnavailable",
+                exception is null
+                    ? "The fixed private client-group GET returned an unrecognized response contract; no client data was returned."
+                    : "The fixed private client-group GET required for configured-membership classification is unavailable.",
                 "private-v2-network-members-groups-api",
                 FixedGroupResource,
                 operationId: null,
                 exception);
         }
-        catch (ContractException)
-        {
-            return CreateNotSupportedResponse(
-                siteId,
-                historyHours,
-                offset,
-                limit,
-                observedAt,
-                "unrecognizedResponseContract",
-                "The fixed private client-group GET returned an unrecognized response contract; no client data was returned.",
-                "private-v2-network-members-groups-api",
-                FixedGroupResource,
-                operationId: null,
-                exception: null);
-        }
+
+        var connected = new ConnectedReadResult(
+            collection.Connected.Records.Select(ToConnectedClient).ToArray(),
+            DuplicateMacCount: 0);
+        var history = collection.History.Records.Select(ToHistoryClient).ToArray();
+        var groups = collection.Groups.Records
+            .Select(group => new ClientGroup(group.GroupId, group.Name, group.Members))
+            .ToArray();
 
         try
         {
@@ -255,6 +237,56 @@ public sealed partial class ClientHistoryReadService
                 exception: null);
         }
     }
+
+    private static ConnectedClient ToConnectedClient(
+        NormalizedClientObservation observation)
+    {
+        var nameSource = observation.Provenance
+            .First(value => value.FieldName == "name").SourceField;
+        var ipSource = observation.Provenance
+            .First(value => value.FieldName == "ipAddress");
+        return new ConnectedClient(
+            observation.Name ?? observation.MacAddress,
+            nameSource,
+            observation.MacAddress,
+            observation.IpAddress,
+            ipSource.Available ? ipSource.SourceField : null,
+            observation.ConnectedAtEpochMilliseconds is null
+                ? null
+                : DateTimeOffset
+                    .FromUnixTimeMilliseconds(observation.ConnectedAtEpochMilliseconds.Value)
+                    .ToString("O", CultureInfo.InvariantCulture));
+    }
+
+    private static HistoryClient ToHistoryClient(
+        NormalizedClientObservation observation)
+    {
+        var nameSource = observation.Provenance
+            .First(value => value.FieldName == "name").SourceField;
+        var ipSource = observation.Provenance
+            .First(value => value.FieldName == "ipAddress");
+        return new HistoryClient(
+            observation.Name ?? observation.MacAddress,
+            nameSource,
+            observation.MacAddress,
+            observation.IpAddress,
+            ipSource.Available ? ipSource.SourceField : null,
+            observation.LastSeenEpochMilliseconds is null
+                ? null
+                : DateTimeOffset
+                    .FromUnixTimeMilliseconds(observation.LastSeenEpochMilliseconds.Value)
+                    .ToString("O", CultureInfo.InvariantCulture),
+            observation.LastSeenEpochMilliseconds / 1000);
+    }
+
+    private static UnifiApiException? ToApiException<T>(
+        SourceCollection<T> source) =>
+        source.HttpStatus is null
+            ? null
+            : new UnifiApiException(
+                (HttpStatusCode)source.HttpStatus.Value,
+                source.ErrorMessage ?? "UniFi source read failed.",
+                source.ControllerReasonCode);
 
     private ToolResponse BuildResponse(
         string siteId,

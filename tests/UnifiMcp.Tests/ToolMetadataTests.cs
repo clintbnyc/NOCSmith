@@ -7,7 +7,7 @@ namespace UnifiMcp.Tests;
 public sealed class ToolMetadataTests
 {
     [Fact]
-    public void Only_apply_is_marked_as_a_destructive_write()
+    public void Journal_write_metadata_distinguishes_collection_and_recovery()
     {
         var tools = typeof(UnifiTools)
             .GetMethods(BindingFlags.Public | BindingFlags.Static)
@@ -19,10 +19,17 @@ public sealed class ToolMetadataTests
             .Where(item => item.Attribute is not null)
             .ToArray();
 
-        Assert.Equal(30, tools.Length);
+        Assert.Equal(35, tools.Length);
         foreach (var tool in tools)
         {
-            if (string.Equals(tool.Attribute!.Name, "unifi_apply_change", StringComparison.Ordinal))
+            if (string.Equals(tool.Attribute!.Name, "unifi_collect_client_observations", StringComparison.Ordinal))
+            {
+                Assert.False(tool.Attribute.ReadOnly);
+                Assert.False(tool.Attribute.Destructive);
+                Assert.False(tool.Attribute.Idempotent);
+            }
+            else if (string.Equals(tool.Attribute.Name, "unifi_apply_change", StringComparison.Ordinal) ||
+                     string.Equals(tool.Attribute.Name, "unifi_recover_client_journal", StringComparison.Ordinal))
             {
                 Assert.False(tool.Attribute.ReadOnly);
                 Assert.True(tool.Attribute.Destructive);

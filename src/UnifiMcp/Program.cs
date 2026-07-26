@@ -6,6 +6,7 @@ using UnifiMcp;
 using UnifiMcp.Api;
 using UnifiMcp.Configuration;
 using UnifiMcp.Contracts;
+using UnifiMcp.Journal;
 using UnifiMcp.Security;
 using UnifiMcp.Tools;
 using UnifiMcp.Writes;
@@ -54,6 +55,11 @@ try
     builder.Services.AddSingleton<SiteManagerDeviceEnrichmentService>();
     builder.Services.AddSingleton<ClientGroupReadService>();
     builder.Services.AddSingleton<ClientHistoryReadService>();
+    builder.Services.AddSingleton<IClientJournalClock, SystemClientJournalClock>();
+    builder.Services.AddSingleton<IClientCollectionIdGenerator, GuidClientCollectionIdGenerator>();
+    builder.Services.AddSingleton<ClientObservationCollector>();
+    builder.Services.AddSingleton<ClientJournalStore>();
+    builder.Services.AddSingleton<ClientJournalService>();
     builder.Services.AddSingleton<SystemLogReadService>();
     builder.Services.AddSingleton<SnapshotService>();
     builder.Services.AddHostedService<ContractProbeHostedService>();
@@ -66,12 +72,13 @@ try
                 Name = "unifi-mcp",
                 Title = "UniFi Network MCP Connector",
                 Version = "1.0.0",
-                Description = "Private, contract-validated UniFi Network access with optional read-only Site Manager fleet enrichment."
+                Description = "Private, contract-validated UniFi Network access with optional read-only Site Manager enrichment and an explicit-only projected client observation journal."
             };
             options.ServerInstructions =
                 "Use unifi_get_site_snapshot for reviews and grouped read tools for normal queries. " +
                 "Use unifi_get_capabilities before generic operations. Every mutation must be previewed first. " +
                 "Use unifi_site_manager and unifi_isp_metrics for read-only fleet and ISP history. " +
+                "Client journal collection is an explicit local write and never changes the controller; journal recovery requires the exact current health fingerprint. " +
                 "Never call unifi_apply_change until the user explicitly approves the exact preview; tokens are single-use, expire after five minutes, and are invalidated by state drift. " +
                 "Secrets are redacted and arbitrary URLs are prohibited.";
         })
