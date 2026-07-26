@@ -25,6 +25,8 @@ public static class UnifiTools
         ContractProvider contracts,
         UnifiConfiguration configuration,
         LegacyReadEnrichmentService legacyEnrichment,
+        SiteManagerReadService siteManager,
+        SiteManagerDeviceEnrichmentService siteManagerEnrichment,
         SystemLogReadService systemLogs,
         [Description("Probe the live controller contract again before returning capabilities.")] bool refresh = false,
         CancellationToken cancellationToken = default) =>
@@ -57,8 +59,10 @@ public static class UnifiTools
                 ["readOperations"] = contract.ReadCount,
                 ["writeOperations"] = contract.WriteCount,
                 ["probeWarning"] = contracts.LastProbeWarning,
-                ["knownResponseLimitations"] = ResponseMetadata.GetAllKnownLimitations(contract.Version, legacyEnrichment.Enabled),
+                ["knownResponseLimitations"] = ResponseMetadata.GetAllKnownLimitations(contract, legacyEnrichment.Enabled),
                 ["legacyReadEnrichment"] = legacyEnrichment.Describe(),
+                ["siteManager"] = siteManager.Describe(),
+                ["siteManagerDeviceEnrichment"] = siteManagerEnrichment.Describe(),
                 ["systemLogs"] = systemLogs.Describe(),
                 ["operations"] = operations
             };
@@ -66,6 +70,40 @@ public static class UnifiTools
                 $"UniFi contract {contract.Version}: {contract.ReadCount} read and {contract.WriteCount} write operations allowlisted.",
                 data);
         });
+
+    [McpServerTool(Name = "unifi_site_manager", Title = "Read UniFi Site Manager fleet data", ReadOnly = true, Destructive = false, OpenWorld = false, UseStructuredContent = true)]
+    [Description("Read stable-v1 UniFi Site Manager host, site, and device inventory. Actions: hosts, host, sites, devices. Uses cursor pagination, never calls Early Access, SD-WAN, Cloud Connector, or write endpoints.")]
+    public static Task<ToolResponse> SiteManager(
+        SiteManagerReadService siteManager,
+        [Description("hosts, host, sites, or devices.")] string action,
+        [Description("Required for host; optional devices filter.")] string? hostId = null,
+        [Description("Page size from 1 to 500. Defaults to 500.")] int? pageSize = null,
+        [Description("Opaque continuation returned by a previous response.")] string? nextToken = null,
+        CancellationToken cancellationToken = default) =>
+        Guard(() => siteManager.ReadInventoryAsync(
+            action,
+            hostId,
+            pageSize,
+            nextToken,
+            cancellationToken));
+
+    [McpServerTool(Name = "unifi_isp_metrics", Title = "Read UniFi Site Manager ISP metrics", ReadOnly = true, Destructive = false, OpenWorld = false, UseStructuredContent = true)]
+    [Description("Read stable-v1 ISP history. Interval is 5m or 1h. Use duration (24h for 5m; 7d or 30d for 1h) or RFC3339 timestamps. Optional targets is an array of objects containing hostId and siteId.")]
+    public static Task<ToolResponse> IspMetrics(
+        SiteManagerReadService siteManager,
+        [Description("5m or 1h.")] string interval,
+        [Description("24h for 5m; 7d or 30d for 1h.")] string? duration = null,
+        string? beginTimestamp = null,
+        string? endTimestamp = null,
+        [Description("Optional array of { hostId, siteId, beginTimestamp?, endTimestamp? }.")] JsonElement? targets = null,
+        CancellationToken cancellationToken = default) =>
+        Guard(() => siteManager.ReadIspMetricsAsync(
+            interval,
+            duration,
+            beginTimestamp,
+            endTimestamp,
+            ToNode(targets),
+            cancellationToken));
 
     [McpServerTool(Name = "unifi_get_site_snapshot", Title = "Get UniFi site snapshot", ReadOnly = true, Destructive = false, OpenWorld = false, UseStructuredContent = true)]
     [Description("Collect a recommendation-oriented snapshot of devices, clients, networks, Wi-Fi, firewall, ACL, DNS, switching, VPN, WAN, and traffic-list state. Sections report ok, notApplicable, or failed independently with source operations and observation times.")]
@@ -301,7 +339,13 @@ public static class UnifiTools
         {
             return await action().ConfigureAwait(false);
         }
-        catch (Exception exception) when (exception is ConfigurationException or ContractException or UnifiApiException or ConfirmationException)
+        catch (Exception exception) when (
+            exception is ConfigurationException or
+            ContractException or
+            UnifiApiException or
+            SiteManagerApiException or
+            SiteManagerRateLimitQueueException or
+            ConfirmationException)
         {
             throw new McpException(exception.Message, exception);
         }

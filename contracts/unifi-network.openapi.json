@@ -5642,7 +5642,9 @@
           }
         ],
         "required": [
+          "channel2gLockedTo6",
           "clientIsolationEnabled",
+          "dtimPeriod2gLockedTo3",
           "enabled",
           "hideName",
           "multicastToUnicastConversionEnabled",
@@ -5658,7 +5660,9 @@
           }
         ],
         "required": [
+          "channel2gLockedTo6",
           "clientIsolationEnabled",
+          "dtimPeriod2gLockedTo3",
           "enabled",
           "hideName",
           "id",
@@ -6529,6 +6533,10 @@
               "dtimPeriodByFrequencyGHzOverride": {
                 "$ref": "#/components/schemas/IntegrationWifiDtimPeriodConfigurationDto"
               },
+              "handoffSuggestionsConfiguration": {
+                "$ref": "#/components/schemas/IntegrationWifiHandoffSuggestionsConfigurationDto",
+                "description": "Suggests low-signal clients to roam to a better access point. If null, then it is disabled."
+              },
               "hotspotConfiguration": {
                 "$ref": "#/components/schemas/Wifi hotspot configuration"
               },
@@ -6544,7 +6552,9 @@
           "arpProxyEnabled",
           "broadcastingFrequenciesGHz",
           "bssTransitionEnabled",
+          "channel2gLockedTo6",
           "clientIsolationEnabled",
+          "dtimPeriod2gLockedTo3",
           "enabled",
           "hideName",
           "multicastToUnicastConversionEnabled",
@@ -6597,6 +6607,10 @@
               "dtimPeriodByFrequencyGHzOverride": {
                 "$ref": "#/components/schemas/IntegrationWifiDtimPeriodConfigurationDto"
               },
+              "handoffSuggestionsConfiguration": {
+                "$ref": "#/components/schemas/IntegrationWifiHandoffSuggestionsConfigurationDto",
+                "description": "Suggests low-signal clients to roam to a better access point. If null, then it is disabled."
+              },
               "hotspotConfiguration": {
                 "$ref": "#/components/schemas/Wifi hotspot configuration"
               },
@@ -6612,7 +6626,9 @@
           "arpProxyEnabled",
           "broadcastingFrequenciesGHz",
           "bssTransitionEnabled",
+          "channel2gLockedTo6",
           "clientIsolationEnabled",
+          "dtimPeriod2gLockedTo3",
           "enabled",
           "hideName",
           "id",
@@ -7177,6 +7193,7 @@
             "type": "integer"
           },
           "2.4": {
+            "description": "DTIM period for 2.4GHz band must be 3 when dtimPeriod2gLockedTo3 is enabled.",
             "format": "int32",
             "maximum": 255,
             "minimum": 1,
@@ -7207,6 +7224,25 @@
           "nasId",
           "profileId"
         ],
+        "type": "object"
+      },
+      "IntegrationWifiHandoffSuggestionsConfigurationDto": {
+        "properties": {
+          "band5GHzRssiThreshold": {
+            "description": "RSSI threshold (dBm) for the 5 GHz band. If null, then it is disabled.",
+            "format": "int32",
+            "maximum": -60,
+            "minimum": -80,
+            "type": "integer"
+          },
+          "band6GHzRssiThreshold": {
+            "description": "RSSI threshold (dBm) for the 6 GHz band. If null, then it is disabled.",
+            "format": "int32",
+            "maximum": -70,
+            "minimum": -90,
+            "type": "integer"
+          }
+        },
         "type": "object"
       },
       "IntegrationWifiHotspotConfigurationOverviewDto": {
@@ -9658,11 +9694,21 @@
             "$ref": "#/components/schemas/Broadcasting device filter",
             "description": "Defines the custom scope of devices that will broadcast this WiFi network. If null, the WiFi network will be broadcast by all Access Point capable devices."
           },
+          "channel2gLockedTo6": {
+            "default": false,
+            "description": "Locks 2.4GHz radio channel to 6 on all broadcasting devices",
+            "type": "boolean"
+          },
           "clientFilteringPolicy": {
             "$ref": "#/components/schemas/IntegrationWifiClientFilteringPolicyDto",
             "description": "Client connection filtering policy. Allow/restrict access to the WiFi network based on client device MAC addresses."
           },
           "clientIsolationEnabled": {
+            "type": "boolean"
+          },
+          "dtimPeriod2gLockedTo3": {
+            "default": false,
+            "description": "Locks DTIM period to 3 for 2.4GHz radio",
             "type": "boolean"
           },
           "enabled": {
@@ -9698,7 +9744,9 @@
           }
         },
         "required": [
+          "channel2gLockedTo6",
           "clientIsolationEnabled",
+          "dtimPeriod2gLockedTo3",
           "enabled",
           "hideName",
           "multicastToUnicastConversionEnabled",
@@ -9728,11 +9776,19 @@
             "$ref": "#/components/schemas/Broadcasting device filter",
             "description": "Defines the custom scope of devices that will broadcast this WiFi network. If null, the WiFi network will be broadcast by all Access Point capable devices."
           },
+          "channel2gLockedTo6": {
+            "description": "Locks 2.4GHz radio channel to 6 on all broadcasting devices",
+            "type": "boolean"
+          },
           "clientFilteringPolicy": {
             "$ref": "#/components/schemas/IntegrationWifiClientFilteringPolicyDto",
             "description": "Client connection filtering policy. Allow/restrict access to the WiFi network based on client device MAC addresses."
           },
           "clientIsolationEnabled": {
+            "type": "boolean"
+          },
+          "dtimPeriod2gLockedTo3": {
+            "description": "Locks DTIM period to 3 for 2.4GHz radio",
             "type": "boolean"
           },
           "enabled": {
@@ -9775,7 +9831,9 @@
           }
         },
         "required": [
+          "channel2gLockedTo6",
           "clientIsolationEnabled",
+          "dtimPeriod2gLockedTo3",
           "enabled",
           "hideName",
           "id",
@@ -10133,7 +10191,7 @@
     "description": "",
     "license": {},
     "title": "UniFi Network API",
-    "version": "10.3.58"
+    "version": "10.4.57"
   },
   "openapi": "3.1.0",
   "paths": {

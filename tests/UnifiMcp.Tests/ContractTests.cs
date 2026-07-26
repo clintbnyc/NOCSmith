@@ -10,11 +10,28 @@ public sealed class ContractTests
     {
         var contract = OpenApiContract.LoadEmbedded();
 
-        Assert.Equal("10.3.58", contract.Version);
+        Assert.Equal("10.4.57", contract.Version);
         Assert.Equal(41, contract.ReadCount);
         Assert.Equal(32, contract.WriteCount);
         Assert.Equal(73, contract.Operations.Count);
         Assert.Equal(73, contract.Operations.Select(operation => operation.OperationId).Distinct().Count());
+    }
+
+    [Fact]
+    public void Response_capability_detection_follows_schema_paths()
+    {
+        var contract = OpenApiContract.LoadEmbedded();
+
+        Assert.True(contract.ResponseSchemaContainsPath(
+            "getAdoptedDeviceDetails",
+            "interfaces",
+            "ports",
+            "state"));
+        Assert.False(contract.ResponseSchemaContainsPath(
+            "getAdoptedDeviceDetails",
+            "interfaces",
+            "ports",
+            "stpState"));
     }
 
     [Fact]

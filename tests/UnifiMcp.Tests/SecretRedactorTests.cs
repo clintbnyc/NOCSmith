@@ -30,6 +30,19 @@ public sealed class SecretRedactorTests
     }
 
     [Fact]
+    public void Redacts_both_local_and_site_manager_keys()
+    {
+        var redactor = new SecretRedactor("local-key", "site-manager-key");
+
+        var result = redactor.Redact(
+            "local=local-key cloud=site-manager-key");
+
+        Assert.DoesNotContain("local-key", result, StringComparison.Ordinal);
+        Assert.DoesNotContain("site-manager-key", result, StringComparison.Ordinal);
+        Assert.Equal("local=<redacted> cloud=<redacted>", result);
+    }
+
+    [Fact]
     public void Redacts_hotspot_voucher_codes_without_hiding_unrelated_codes()
     {
         var redactor = new SecretRedactor();

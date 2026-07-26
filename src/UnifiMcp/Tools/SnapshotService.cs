@@ -32,19 +32,22 @@ public sealed class SnapshotService
     private readonly SiteResolver _siteResolver;
     private readonly SecretRedactor _redactor;
     private readonly LegacyReadEnrichmentService _legacyEnrichment;
+    private readonly SiteManagerDeviceEnrichmentService? _siteManagerEnrichment;
 
     public SnapshotService(
         ContractProvider contracts,
         IUnifiClient client,
         SiteResolver siteResolver,
         SecretRedactor redactor,
-        LegacyReadEnrichmentService legacyEnrichment)
+        LegacyReadEnrichmentService legacyEnrichment,
+        SiteManagerDeviceEnrichmentService? siteManagerEnrichment = null)
     {
         _contracts = contracts;
         _client = client;
         _siteResolver = siteResolver;
         _redactor = redactor;
         _legacyEnrichment = legacyEnrichment;
+        _siteManagerEnrichment = siteManagerEnrichment;
     }
 
     public async Task<ToolResponse> GetAsync(string? siteId, CancellationToken cancellationToken)
@@ -101,7 +104,7 @@ public sealed class SnapshotService
                 ["failed"] = failed
             },
             ["knownResponseLimitations"] = ResponseMetadata.GetAllKnownLimitations(
-                contract.Version,
+                contract,
                 HasSuccessfulSnapshotDeviceEnrichment(sections))
         };
 
@@ -128,6 +131,14 @@ public sealed class SnapshotService
             var observedAt = DateTimeOffset.UtcNow;
             var data = ResponseMetadata.AnnotatePagination(response, query);
             data = await _legacyEnrichment.EnrichAsync(operationId, path, data, cancellationToken).ConfigureAwait(false);
+            if (_siteManagerEnrichment is not null)
+            {
+                data = await _siteManagerEnrichment.EnrichAsync(
+                    operationId,
+                    data,
+                    cancellationToken).ConfigureAwait(false);
+            }
+
             data = ResponseMetadata.AnnotateCoverage(
                 data,
                 operationId,

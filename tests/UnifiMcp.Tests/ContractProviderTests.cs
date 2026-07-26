@@ -9,7 +9,7 @@ namespace UnifiMcp.Tests;
 public sealed class ContractProviderTests
 {
     [Fact]
-    public async Task Newer_live_application_is_an_explicit_restricted_fallback()
+    public async Task Matching_live_application_uses_reviewed_embedded_contract()
     {
         var provider = new ContractProvider(
             OpenApiContract.LoadEmbedded(),
@@ -19,11 +19,10 @@ public sealed class ContractProviderTests
         await provider.RefreshAsync(CancellationToken.None);
 
         Assert.Equal("10.4.57", provider.LiveApplicationVersion);
-        Assert.Equal("10.3.58", provider.Current.Version);
+        Assert.Equal("10.4.57", provider.Current.Version);
         Assert.Equal("embedded", provider.Current.Source);
-        Assert.Equal("embedded-fallback", provider.Status);
-        Assert.Contains("restricted to reviewed embedded 10.3.58", provider.LastProbeWarning, StringComparison.Ordinal);
-        Assert.Contains("response fields outside that contract may be unavailable", provider.LastProbeWarning, StringComparison.Ordinal);
+        Assert.Equal("embedded-match", provider.Status);
+        Assert.Null(provider.LastProbeWarning);
     }
 
     private sealed class NewerControllerClient : IUnifiClient

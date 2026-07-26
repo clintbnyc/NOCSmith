@@ -13,12 +13,50 @@ public sealed class ConfigurationTests
             ("UNIFI_API_KEY", "test-key"),
             ("UNIFI_DEFAULT_SITE_ID", null),
             ("UNIFI_TIMEOUT_SECONDS", null),
-            ("UNIFI_ENABLE_LEGACY_READ_ENRICHMENT", null));
+            ("UNIFI_ENABLE_LEGACY_READ_ENRICHMENT", null),
+            ("UNIFI_SITE_API_KEY", null),
+            ("UNIFI_SITE_MANAGER_LOCAL_HOST_ID", null));
 
         var configuration = UnifiConfiguration.Load();
 
         Assert.Equal("https://unifi.nutria-newton.ts.net/proxy/network/integration/", configuration.BaseUri.ToString());
         Assert.False(configuration.EnableLegacyReadEnrichment);
+        Assert.False(configuration.SiteManagerConfigured);
+    }
+
+    [Fact]
+    public void Site_manager_configuration_is_optional_and_preserves_opaque_host_id()
+    {
+        using var environment = new EnvironmentScope(
+            ("UNIFI_API_KEY", "test-key"),
+            ("UNIFI_SITE_API_KEY", "site-key"),
+            ("UNIFI_SITE_MANAGER_LOCAL_HOST_ID", "console-id:123"));
+
+        var configuration = UnifiConfiguration.Load();
+
+        Assert.True(configuration.SiteManagerConfigured);
+        Assert.Equal("site-key", configuration.SiteManagerApiKey);
+        Assert.Equal("console-id:123", configuration.SiteManagerLocalHostId);
+    }
+
+    [Fact]
+    public void Rejects_unresolved_site_manager_reference_and_invalid_host_id()
+    {
+        using (new EnvironmentScope(
+                   ("UNIFI_API_KEY", "test-key"),
+                   ("UNIFI_SITE_API_KEY", "op://Private/UniFi/Site Manager")))
+        {
+            var exception = Assert.Throws<ConfigurationException>(() => UnifiConfiguration.Load());
+            Assert.Contains("UNIFI_SITE_API_KEY", exception.Message, StringComparison.Ordinal);
+        }
+
+        using (new EnvironmentScope(
+                   ("UNIFI_API_KEY", "test-key"),
+                   ("UNIFI_SITE_API_KEY", "site-key"),
+                   ("UNIFI_SITE_MANAGER_LOCAL_HOST_ID", "bad\nhost")))
+        {
+            Assert.Throws<ConfigurationException>(() => UnifiConfiguration.Load());
+        }
     }
 
     [Fact]

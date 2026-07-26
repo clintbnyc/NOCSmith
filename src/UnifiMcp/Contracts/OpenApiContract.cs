@@ -35,6 +35,21 @@ public sealed partial class OpenApiContract
 
     public int WriteCount => _operations.Count - ReadCount;
 
+    public bool ResponseSchemaContainsPath(string operationId, params string[] propertyPath)
+    {
+        if (propertyPath.Length == 0)
+        {
+            throw new ArgumentException("A response property path is required.", nameof(propertyPath));
+        }
+
+        var operation = GetOperation(operationId, requireRead: true);
+        var methodName = operation.Method.Method.ToLowerInvariant();
+        var schema = _document["paths"]?[operation.PathTemplate]?[methodName]?["responses"]?["200"]?
+            ["content"]?["application/json"]?["schema"] as JsonObject;
+        return schema is not null &&
+            SchemaContainsPath(schema, propertyPath, 0, new HashSet<string>(StringComparer.Ordinal));
+    }
+
     public static OpenApiContract LoadEmbedded()
     {
         var assembly = Assembly.GetExecutingAssembly();
@@ -499,6 +514,57 @@ public sealed partial class OpenApiContract
         }
 
         return current as JsonObject ?? throw new ContractException($"Schema reference '{reference}' was not found.");
+    }
+
+    private bool SchemaContainsPath(
+        JsonObject schemaNode,
+        IReadOnlyList<string> propertyPath,
+        int pathIndex,
+        HashSet<string> visitedReferences)
+    {
+        var reference = schemaNode["$ref"]?.GetValue<string>();
+        if (reference is not null && !visitedReferences.Add(reference))
+        {
+            return false;
+        }
+
+        var schema = Resolve(schemaNode);
+        foreach (var compositionName in new[] { "allOf", "oneOf", "anyOf" })
+        {
+            if (schema[compositionName] is JsonArray composition &&
+                composition.OfType<JsonObject>().Any(candidate =>
+                    SchemaContainsPath(
+                        candidate,
+                        propertyPath,
+                        pathIndex,
+                        new HashSet<string>(visitedReferences, StringComparer.Ordinal))))
+            {
+                return true;
+            }
+        }
+
+        if (schema["properties"] is not JsonObject properties ||
+            properties[propertyPath[pathIndex]] is not JsonObject propertySchema)
+        {
+            return false;
+        }
+
+        if (pathIndex == propertyPath.Count - 1)
+        {
+            return true;
+        }
+
+        var resolvedProperty = Resolve(propertySchema);
+        if (resolvedProperty["items"] is JsonObject items)
+        {
+            resolvedProperty = Resolve(items);
+        }
+
+        return SchemaContainsPath(
+            resolvedProperty,
+            propertyPath,
+            pathIndex + 1,
+            visitedReferences);
     }
 
     private bool IsValid(JsonNode node, JsonObject schema, string path)

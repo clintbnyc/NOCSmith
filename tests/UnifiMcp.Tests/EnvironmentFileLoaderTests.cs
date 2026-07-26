@@ -12,6 +12,8 @@ public sealed class EnvironmentFileLoaderTests
         "UNIFI_DEFAULT_SITE_ID",
         "UNIFI_TIMEOUT_SECONDS",
         "UNIFI_ENABLE_LEGACY_READ_ENRICHMENT",
+        "UNIFI_SITE_API_KEY",
+        "UNIFI_SITE_MANAGER_LOCAL_HOST_ID",
         "UNRELATED_VARIABLE"
     };
 
@@ -25,6 +27,8 @@ public sealed class EnvironmentFileLoaderTests
             "UNIFI_DEFAULT_SITE_ID=6cc5f1b8-cec7-4c50-9b92-805b73892756\n" +
             "UNIFI_TIMEOUT_SECONDS=45\n" +
             "UNIFI_ENABLE_LEGACY_READ_ENRICHMENT=true\n" +
+            "UNIFI_SITE_API_KEY=site-manager-key\n" +
+            "UNIFI_SITE_MANAGER_LOCAL_HOST_ID=host:123\n" +
             "UNRELATED_VARIABLE=must-not-be-imported\n");
 
         var remainingArgs = EnvironmentFileLoader.LoadAndRemoveOption(
@@ -37,6 +41,8 @@ public sealed class EnvironmentFileLoaderTests
             Environment.GetEnvironmentVariable("UNIFI_BASE_URL"));
         Assert.Equal("45", Environment.GetEnvironmentVariable("UNIFI_TIMEOUT_SECONDS"));
         Assert.Equal("true", Environment.GetEnvironmentVariable("UNIFI_ENABLE_LEGACY_READ_ENRICHMENT"));
+        Assert.Equal("site-manager-key", Environment.GetEnvironmentVariable("UNIFI_SITE_API_KEY"));
+        Assert.Equal("host:123", Environment.GetEnvironmentVariable("UNIFI_SITE_MANAGER_LOCAL_HOST_ID"));
         Assert.Null(Environment.GetEnvironmentVariable("UNRELATED_VARIABLE"));
     }
 
