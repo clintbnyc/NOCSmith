@@ -101,6 +101,11 @@ public sealed class ClientHistoryReadServiceTests
         Assert.Equal("unknown", missing["state"]!.GetValue<string>());
         Assert.Null(missing["name"]);
 
+        AssertCompleteFieldProvenance(current);
+        AssertCompleteFieldProvenance(tablet);
+        AssertCompleteFieldProvenance(sparse);
+        AssertCompleteFieldProvenance(missing);
+
         var metadata = data["_connector"]!.AsObject();
         Assert.Equal("ok", metadata["status"]!.GetValue<string>());
         Assert.Equal(2, metadata["onlineCount"]!.GetValue<int>());
@@ -224,6 +229,61 @@ public sealed class ClientHistoryReadServiceTests
             data["_connector"]!["pagination"]!["currentlyConnected"]!["truncated"]!.GetValue<bool>());
     }
 
+    [Fact]
+    public async Task Official_hostname_is_retained_when_name_is_unavailable()
+    {
+        var client = new HistoryClient
+        {
+            ConnectedClients = new JsonArray
+            {
+                new JsonObject
+                {
+                    ["id"] = Guid.NewGuid().ToString(),
+                    ["hostname"] = "current-hostname",
+                    ["macAddress"] = "aa:bb:cc:dd:ee:15",
+                    ["ipAddress"] = "192.168.1.15"
+                }
+            }
+        };
+        var service = CreateService(client);
+
+        var response = await service.ReadAsync(null, 24, 0, 100, CancellationToken.None);
+
+        var record = Assert.Single(
+            Assert.IsType<JsonObject>(response.Data)["currentlyConnectedClients"]!.AsArray())!.AsObject();
+        Assert.Equal("current-hostname", record["name"]!.GetValue<string>());
+        Assert.Equal(
+            "hostname",
+            record["fieldProvenance"]!["name"]!["field"]!.GetValue<string>());
+        AssertCompleteFieldProvenance(record);
+    }
+
+    [Theory]
+    [MemberData(nameof(MalformedConnectedPageResponses))]
+    public async Task Malformed_official_pagination_contract_fails_closed(JsonNode malformed)
+    {
+        var client = new HistoryClient
+        {
+            History = new JsonArray(
+                History(
+                    "aa:bb:cc:dd:ee:10",
+                    "Potentially Current",
+                    "192.168.1.10",
+                    DateTimeOffset.UtcNow.AddMinutes(-5).ToUnixTimeSeconds())),
+            ConnectedResponseOverride = malformed
+        };
+        var service = CreateService(client);
+
+        var response = await service.ReadAsync(null, 24, 0, 100, CancellationToken.None);
+
+        AssertNotSupported(response, "unrecognizedResponseContract");
+        var metadata = Assert.IsType<JsonObject>(response.Data)["_connector"]!.AsObject();
+        Assert.Equal("official-network-integration-api", metadata["source"]!.GetValue<string>());
+        Assert.Equal("getConnectedClientOverviewPage", metadata["operationId"]!.GetValue<string>());
+        Assert.Null(metadata["fixedResource"]);
+        Assert.Equal(0, client.GroupReadCount);
+    }
+
     [Theory]
     [MemberData(nameof(MalformedHistoryResponses))]
     public async Task Malformed_private_history_contract_fails_closed(JsonNode malformed)
@@ -239,6 +299,8 @@ public sealed class ClientHistoryReadServiceTests
         var response = await service.ReadAsync(null, 24, 0, 100, CancellationToken.None);
 
         AssertNotSupported(response, "unrecognizedResponseContract");
+        var metadata = Assert.IsType<JsonObject>(response.Data)["_connector"]!.AsObject();
+        Assert.Equal("private-v2-client-history-api", metadata["source"]!.GetValue<string>());
         Assert.Equal(0, client.GroupReadCount);
         Assert.Equal(0, client.ConnectedOverviewReadCount);
     }
@@ -270,6 +332,14 @@ public sealed class ClientHistoryReadServiceTests
         var response = await service.ReadAsync(null, 24, 0, 100, CancellationToken.None);
 
         AssertNotSupported(response, "unrecognizedResponseContract");
+        var metadata = Assert.IsType<JsonObject>(response.Data)["_connector"]!.AsObject();
+        Assert.Equal(
+            "private-v2-network-members-groups-api",
+            metadata["source"]!.GetValue<string>());
+        Assert.Equal(
+            "v2/api/site/{site}/network-members-groups",
+            metadata["fixedResource"]!.GetValue<string>());
+        Assert.Null(metadata["operationId"]);
     }
 
     [Fact]
@@ -290,7 +360,109 @@ public sealed class ClientHistoryReadServiceTests
         var response = await service.ReadAsync(null, 24, 0, 100, CancellationToken.None);
 
         AssertNotSupported(response, "unrecognizedResponseContract");
+        var metadata = Assert.IsType<JsonObject>(response.Data)["_connector"]!.AsObject();
+        Assert.Equal("official-network-integration-api", metadata["source"]!.GetValue<string>());
+        Assert.Equal("getConnectedClientOverviewPage", metadata["operationId"]!.GetValue<string>());
+        Assert.Null(metadata["fixedResource"]);
         Assert.Equal(0, client.GroupReadCount);
+    }
+
+    [Fact]
+    public async Task Unsupported_group_source_identifies_the_failing_resource()
+    {
+        var client = new HistoryClient
+        {
+            GroupException = new UnifiApiException(
+                HttpStatusCode.NotFound,
+                "not found",
+                "api.err.NotFound")
+        };
+        var service = CreateService(client);
+
+        var response = await service.ReadAsync(null, 24, 0, 100, CancellationToken.None);
+
+        AssertNotSupported(response, "requiredSourceUnavailable");
+        var metadata = Assert.IsType<JsonObject>(response.Data)["_connector"]!.AsObject();
+        Assert.Equal(
+            "private-v2-network-members-groups-api",
+            metadata["source"]!.GetValue<string>());
+        Assert.Equal(
+            "v2/api/site/{site}/network-members-groups",
+            metadata["fixedResource"]!.GetValue<string>());
+    }
+
+    [Fact]
+    public async Task Unsupported_current_source_identifies_the_failing_operation()
+    {
+        var client = new HistoryClient
+        {
+            ConnectedException = new UnifiApiException(
+                HttpStatusCode.NotFound,
+                "not found",
+                "api.err.NotFound")
+        };
+        var service = CreateService(client);
+
+        var response = await service.ReadAsync(null, 24, 0, 100, CancellationToken.None);
+
+        AssertNotSupported(response, "requiredSourceUnavailable");
+        var metadata = Assert.IsType<JsonObject>(response.Data)["_connector"]!.AsObject();
+        Assert.Equal("official-network-integration-api", metadata["source"]!.GetValue<string>());
+        Assert.Equal("getConnectedClientOverviewPage", metadata["operationId"]!.GetValue<string>());
+        Assert.Null(metadata["fixedResource"]);
+        Assert.Equal(0, client.GroupReadCount);
+    }
+
+    [Fact]
+    public async Task Aggregate_projected_group_references_are_bounded()
+    {
+        var connected = new JsonArray();
+        var memberMacs = Enumerable.Range(0, 11).Select(Mac).ToArray();
+        foreach (var (mac, index) in memberMacs.Select((mac, index) => (mac, index)))
+        {
+            connected.Add(Connected(mac, $"Client {index}", $"192.168.1.{index + 1}"));
+        }
+
+        var groups = new JsonArray();
+        for (var index = 0; index < 500; index++)
+        {
+            groups.Add(Group(index.ToString("x24"), $"Group {index}", memberMacs));
+        }
+
+        var client = new HistoryClient
+        {
+            ConnectedClients = connected,
+            Groups = groups
+        };
+        var service = CreateService(client);
+
+        var response = await service.ReadAsync(null, 24, 0, 100, CancellationToken.None);
+
+        AssertNotSupported(response, "projectionSafetyLimitExceeded");
+        var metadata = Assert.IsType<JsonObject>(response.Data)["_connector"]!.AsObject();
+        Assert.Equal("connector-projection", metadata["source"]!.GetValue<string>());
+    }
+
+    [Fact]
+    public async Task Aggregate_group_memberships_are_bounded_before_projection()
+    {
+        var members = Enumerable.Range(0, 4000).Select(Mac).ToArray();
+        var client = new HistoryClient
+        {
+            Groups = new JsonArray(
+                Group("111111111111111111111111", "One", members),
+                Group("222222222222222222222222", "Two", members),
+                Group("333333333333333333333333", "Three", members))
+        };
+        var service = CreateService(client);
+
+        var response = await service.ReadAsync(null, 24, 0, 100, CancellationToken.None);
+
+        AssertNotSupported(response, "unrecognizedResponseContract");
+        var metadata = Assert.IsType<JsonObject>(response.Data)["_connector"]!.AsObject();
+        Assert.Equal(
+            "private-v2-network-members-groups-api",
+            metadata["source"]!.GetValue<string>());
     }
 
     [Fact]
@@ -311,6 +483,57 @@ public sealed class ClientHistoryReadServiceTests
         var data = Assert.IsType<JsonObject>(response.Data);
         Assert.Equal(404, data["_connector"]!["httpStatus"]!.GetValue<int>());
         Assert.Equal("api.err.NotFound", data["_connector"]!["controllerReasonCode"]!.GetValue<string>());
+        Assert.Equal(
+            "private-v2-client-history-api",
+            data["_connector"]!["source"]!.GetValue<string>());
+        Assert.Equal(
+            "v2/api/site/{site}/clients/history?onlyNonBlocked=true&includeUnifiDevices=true&withinHours={withinHours}",
+            data["_connector"]!["fixedResource"]!.GetValue<string>());
+    }
+
+    public static IEnumerable<object[]> MalformedConnectedPageResponses()
+    {
+        yield return new object[] { new JsonArray() };
+        yield return new object[]
+        {
+            ConnectedPage(new JsonArray(), count: 0, offset: 0, limit: 200, totalCount: 1)
+        };
+        yield return new object[]
+        {
+            ConnectedPage(
+                new JsonArray(Connected("aa:bb:cc:dd:ee:01", "Current", "192.168.1.1")),
+                count: 0,
+                offset: 0,
+                limit: 200,
+                totalCount: 1)
+        };
+        yield return new object[]
+        {
+            ConnectedPage(new JsonArray(), count: 0, offset: 1, limit: 200, totalCount: 1)
+        };
+        yield return new object[]
+        {
+            ConnectedPage(new JsonArray(), count: 0, offset: 0, limit: 100, totalCount: 0)
+        };
+        yield return new object[]
+        {
+            new JsonObject
+            {
+                ["count"] = 0,
+                ["data"] = new JsonArray(),
+                ["limit"] = 200,
+                ["offset"] = 0
+            }
+        };
+        yield return new object[]
+        {
+            ConnectedPage(
+                new JsonArray(Connected("aa:bb:cc:dd:ee:01", "Current", "192.168.1.1")),
+                count: 1,
+                offset: 0,
+                limit: 200,
+                totalCount: 0)
+        };
     }
 
     public static IEnumerable<object[]> MalformedHistoryResponses()
@@ -373,6 +596,15 @@ public sealed class ClientHistoryReadServiceTests
         Assert.False(data["_connector"]!["rawPrivateResponsesReturned"]!.GetValue<bool>());
     }
 
+    private static void AssertCompleteFieldProvenance(JsonObject record)
+    {
+        var provenance = record["fieldProvenance"]!.AsObject();
+        foreach (var field in record.Select(property => property.Key).Where(field => field != "fieldProvenance"))
+        {
+            Assert.True(provenance.ContainsKey(field), $"Missing provenance for '{field}'.");
+        }
+    }
+
     private static ClientHistoryReadService CreateService(HistoryClient client, bool enabled = true)
     {
         var configuration = new UnifiConfiguration(
@@ -424,6 +656,20 @@ public sealed class ClientHistoryReadServiceTests
         ["unrelated"] = "discarded"
     };
 
+    private static JsonObject ConnectedPage(
+        JsonArray data,
+        long count,
+        long offset,
+        long limit,
+        long totalCount) => new()
+        {
+            ["count"] = count,
+            ["data"] = data,
+            ["limit"] = limit,
+            ["offset"] = offset,
+            ["totalCount"] = totalCount
+        };
+
     private static string Mac(int index) =>
         $"02:00:{(index >> 24) & 0xff:x2}:{(index >> 16) & 0xff:x2}:{(index >> 8) & 0xff:x2}:{index & 0xff:x2}";
 
@@ -438,6 +684,10 @@ public sealed class ClientHistoryReadServiceTests
         public JsonNode? ConnectedResponseOverride { get; init; }
 
         public Exception? HistoryException { get; init; }
+
+        public Exception? GroupException { get; init; }
+
+        public Exception? ConnectedException { get; init; }
 
         public int HistoryReadCount { get; private set; }
 
@@ -491,7 +741,9 @@ public sealed class ClientHistoryReadServiceTests
         {
             GroupReadCount++;
             Assert.Equal("default", internalSiteReference);
-            return Task.FromResult(Groups?.DeepClone());
+            return GroupException is null
+                ? Task.FromResult(Groups?.DeepClone())
+                : Task.FromException<JsonNode?>(GroupException);
         }
 
         public Task<JsonNode?> QuerySystemLogsAsync(
@@ -522,6 +774,11 @@ public sealed class ClientHistoryReadServiceTests
         private Task<JsonNode?> ReadConnected(string relativeUri)
         {
             ConnectedOverviewReadCount++;
+            if (ConnectedException is not null)
+            {
+                return Task.FromException<JsonNode?>(ConnectedException);
+            }
+
             if (ConnectedResponseOverride is not null)
             {
                 return Task.FromResult<JsonNode?>(ConnectedResponseOverride.DeepClone());

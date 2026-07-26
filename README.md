@@ -70,7 +70,10 @@ The action accepts only the UI's bounded `historyHours` values: `24`, `72`,
 value. `offset` and `limit` provide connector-side pagination independently
 over each returned classification, with a maximum limit of 200. The controller
 history response itself is capped at 10,000 records and must match the
-validated object-record contract.
+validated object-record contract. Official current-client pages must also
+match their declared count, offset, limit, and total count; incomplete or
+contradictory pagination fails closed rather than risking a false offline
+classification.
 
 The response keeps three data grains visibly separate:
 
@@ -86,13 +89,16 @@ The response keeps three data grains visibly separate:
   evidence, or online state.
 
 All three classifications can include projected group IDs and redacted names
-from the fixed client-group resource. Per-field provenance identifies the
-source and authority of every returned field. Metadata reports requested and
-effective windows, source collections, per-classification pagination,
-truncation, online/offline counts, missing-field counts, exact audit scope,
-and limitations. A missing endpoint or unrecognized history/group response
-returns `status: notSupported` with empty client arrays; raw private records
-are never returned.
+from the fixed client-group resource. Total configured memberships are capped
+at 10,000, and one response page can project at most 5,000 group references.
+Per-field provenance identifies the source, authority, and availability of
+every projected data field, including derived and unavailable values. Metadata
+reports requested and effective windows, source collections,
+per-classification pagination, truncation, safety limits, online/offline
+counts, missing-field counts, exact audit scope, and limitations. A missing
+endpoint or unrecognized history, current-client, or group response returns
+`status: notSupported` with empty client arrays and identifies the exact
+failing source; raw private records are never returned.
 
 `unifi_client_groups` separately sends a fixed GET to
 `/proxy/network/v2/api/site/{site}/network-members-groups`. Network `10.4.57`

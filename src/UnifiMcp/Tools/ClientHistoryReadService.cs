@@ -25,6 +25,8 @@ public sealed partial class ClientHistoryReadService
     private const int MaximumGroups = 500;
     private const int MaximumMembersPerGroup = 5000;
     private const int MaximumUniqueGroupMembers = 10000;
+    private const int MaximumTotalGroupMemberships = 10000;
+    private const int MaximumProjectedGroupReferences = 5000;
     private const int MaximumTextLength = 4096;
 
     private static readonly int[] SupportedHistoryHours = { 24, 72, 168, 336, 720, 4320 };
@@ -63,6 +65,9 @@ public sealed partial class ClientHistoryReadService
         ["defaultHistoryHours"] = DefaultHistoryHours,
         ["defaultLimit"] = DefaultLimit,
         ["maximumLimit"] = MaximumLimit,
+        ["maximumHistoryRecords"] = MaximumHistoryRecords,
+        ["maximumTotalGroupMemberships"] = MaximumTotalGroupMemberships,
+        ["maximumProjectedGroupReferences"] = MaximumProjectedGroupReferences,
         ["sourceGrains"] = new JsonArray(
             "official currently connected client overview",
             "time-bounded non-blocked private client history",
@@ -108,12 +113,13 @@ public sealed partial class ClientHistoryReadService
             .ResolveInternalReferenceAsync(siteId, cancellationToken)
             .ConfigureAwait(false);
 
-        JsonNode? historyResponse;
+        IReadOnlyList<HistoryClient> history;
         try
         {
-            historyResponse = await _client
+            var historyResponse = await _client
                 .ReadClientHistoryAsync(internalSiteReference, historyHours, cancellationToken)
                 .ConfigureAwait(false);
+            history = ProjectHistory(historyResponse, historyHours, observedAt);
         }
         catch (UnifiApiException exception) when (IsUnsupportedResource(exception))
         {
@@ -125,38 +131,9 @@ public sealed partial class ClientHistoryReadService
                 observedAt,
                 "endpointUnavailable",
                 "This UniFi Network version does not expose the fixed private client-history GET to the Integration API key.",
-                exception);
-        }
-
-        try
-        {
-            var history = ProjectHistory(historyResponse, historyHours, observedAt);
-            var connected = await ReadConnectedClientsAsync(siteId, cancellationToken).ConfigureAwait(false);
-            var groupResponse = await _client
-                .ReadNetworkMembersGroupsAsync(internalSiteReference, cancellationToken)
-                .ConfigureAwait(false);
-            var groups = ProjectGroups(groupResponse);
-
-            return BuildResponse(
-                siteId,
-                historyHours,
-                offset,
-                limit,
-                observedAt,
-                connected,
-                history,
-                groups);
-        }
-        catch (UnifiApiException exception) when (IsUnsupportedResource(exception))
-        {
-            return CreateNotSupportedResponse(
-                siteId,
-                historyHours,
-                offset,
-                limit,
-                observedAt,
-                "requiredSourceUnavailable",
-                "A required fixed read-only source for client-history classification is unavailable.",
+                "private-v2-client-history-api",
+                FixedHistoryResource,
+                operationId: null,
                 exception);
         }
         catch (ContractException)
@@ -168,7 +145,113 @@ public sealed partial class ClientHistoryReadService
                 limit,
                 observedAt,
                 "unrecognizedResponseContract",
-                "The fixed client-history read returned an unrecognized response contract; no client data was returned.",
+                "The fixed private client-history GET returned an unrecognized response contract; no client data was returned.",
+                "private-v2-client-history-api",
+                FixedHistoryResource,
+                operationId: null,
+                exception: null);
+        }
+
+        ConnectedReadResult connected;
+        try
+        {
+            connected = await ReadConnectedClientsAsync(siteId, cancellationToken).ConfigureAwait(false);
+        }
+        catch (UnifiApiException exception) when (IsUnsupportedResource(exception))
+        {
+            return CreateNotSupportedResponse(
+                siteId,
+                historyHours,
+                offset,
+                limit,
+                observedAt,
+                "requiredSourceUnavailable",
+                "The official connected-client overview required for current-state classification is unavailable.",
+                "official-network-integration-api",
+                fixedResource: null,
+                ConnectedClientOperationId,
+                exception);
+        }
+        catch (ContractException)
+        {
+            return CreateNotSupportedResponse(
+                siteId,
+                historyHours,
+                offset,
+                limit,
+                observedAt,
+                "unrecognizedResponseContract",
+                "The official connected-client overview returned an unrecognized pagination or record contract; no client data was returned.",
+                "official-network-integration-api",
+                fixedResource: null,
+                ConnectedClientOperationId,
+                exception: null);
+        }
+
+        IReadOnlyList<ClientGroup> groups;
+        try
+        {
+            var groupResponse = await _client
+                .ReadNetworkMembersGroupsAsync(internalSiteReference, cancellationToken)
+                .ConfigureAwait(false);
+            groups = ProjectGroups(groupResponse);
+        }
+        catch (UnifiApiException exception) when (IsUnsupportedResource(exception))
+        {
+            return CreateNotSupportedResponse(
+                siteId,
+                historyHours,
+                offset,
+                limit,
+                observedAt,
+                "requiredSourceUnavailable",
+                "The fixed private client-group GET required for configured-membership classification is unavailable.",
+                "private-v2-network-members-groups-api",
+                FixedGroupResource,
+                operationId: null,
+                exception);
+        }
+        catch (ContractException)
+        {
+            return CreateNotSupportedResponse(
+                siteId,
+                historyHours,
+                offset,
+                limit,
+                observedAt,
+                "unrecognizedResponseContract",
+                "The fixed private client-group GET returned an unrecognized response contract; no client data was returned.",
+                "private-v2-network-members-groups-api",
+                FixedGroupResource,
+                operationId: null,
+                exception: null);
+        }
+
+        try
+        {
+            return BuildResponse(
+                siteId,
+                historyHours,
+                offset,
+                limit,
+                observedAt,
+                connected,
+                history,
+                groups);
+        }
+        catch (ContractException)
+        {
+            return CreateNotSupportedResponse(
+                siteId,
+                historyHours,
+                offset,
+                limit,
+                observedAt,
+                "projectionSafetyLimitExceeded",
+                "The projected client-history result exceeded a connector safety limit; no client data was returned.",
+                "connector-projection",
+                fixedResource: null,
+                operationId: null,
                 exception: null);
         }
     }
@@ -220,6 +303,10 @@ public sealed partial class ClientHistoryReadService
         var connectedPage = Page(connected, offset, limit);
         var offlinePage = Page(offline, offset, limit);
         var missingPage = Page(groupMembersWithoutHistory, offset, limit);
+        ValidateProjectedGroupReferences(
+            connectedPage.Select(client => GetGroups(groupsByMac, client.MacAddress)),
+            offlinePage.Select(client => GetGroups(groupsByMac, client.MacAddress)),
+            missingPage.Select(mac => GetGroups(groupsByMac, mac)));
         var connectedData = new JsonArray(connectedPage
             .Select(client => (JsonNode?)ProjectConnected(client, GetGroups(groupsByMac, client.MacAddress)))
             .ToArray());
@@ -316,6 +403,17 @@ public sealed partial class ClientHistoryReadService
                 ["rawPrivateResponsesReturned"] = false,
                 ["redactionApplied"] = true,
                 ["pagination"] = pagination,
+                ["safetyLimits"] = new JsonObject
+                {
+                    ["maximumConnectedClients"] = MaximumConnectedClients,
+                    ["maximumHistoryRecords"] = MaximumHistoryRecords,
+                    ["maximumGroups"] = MaximumGroups,
+                    ["maximumMembersPerGroup"] = MaximumMembersPerGroup,
+                    ["maximumUniqueGroupMembers"] = MaximumUniqueGroupMembers,
+                    ["maximumTotalGroupMemberships"] = MaximumTotalGroupMemberships,
+                    ["maximumProjectedGroupReferences"] = MaximumProjectedGroupReferences,
+                    ["maximumRecordsPerClassificationPage"] = MaximumLimit
+                },
                 ["onlineCount"] = connected.Length,
                 ["offlineCount"] = offline.Length,
                 ["connectedDuplicateMacsSuppressed"] = connectedResult.DuplicateMacCount,
@@ -381,7 +479,7 @@ public sealed partial class ClientHistoryReadService
                     continue;
                 }
 
-                var nameSource = FirstTextSource(record, "name");
+                var nameSource = FirstTextSource(record, "name", "hostname");
                 var name = nameSource.Value ?? macAddress;
                 var ipSource = FirstTextSource(record, "ipAddress");
                 var ipAddress = ValidateOptionalIp(ipSource.Value, "official connected-client ipAddress");
@@ -394,11 +492,25 @@ public sealed partial class ClientHistoryReadService
                     ReadOptionalTimestamp(record, "connectedAt")));
             }
 
+            var pageMetadata = ValidateConnectedPageMetadata(
+                responseObject,
+                page,
+                offset,
+                ConnectedClientPageSize);
+            if (pageMetadata.TotalCount > MaximumConnectedClients)
+            {
+                throw new ContractException(
+                    $"Official connected-client totalCount exceeded the safety limit of {MaximumConnectedClients} records.");
+            }
+
+            if (page.Count == 0 && pageMetadata.TotalCount > offset)
+            {
+                throw new ContractException(
+                    "Official connected-client pagination ended before the declared totalCount.");
+            }
+
             offset += page.Count;
-            var totalCount = ReadInteger(responseObject["totalCount"]);
-            if (page.Count == 0 ||
-                totalCount is not null && offset >= totalCount.Value ||
-                totalCount is null && page.Count < ConnectedClientPageSize)
+            if (offset >= pageMetadata.TotalCount)
             {
                 return new ConnectedReadResult(records, duplicateMacCount);
             }
@@ -464,6 +576,7 @@ public sealed partial class ClientHistoryReadService
         var groups = new List<ClientGroup>();
         var seenIds = new HashSet<string>(StringComparer.Ordinal);
         var uniqueMembers = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        var totalMemberships = 0;
         foreach (var source in sourceRecords)
         {
             var id = ReadOptionalText(source, "id")
@@ -492,6 +605,13 @@ public sealed partial class ClientHistoryReadService
             {
                 throw new ContractException(
                     $"Private UniFi client-group '{id}' exceeded the member safety limit.");
+            }
+
+            totalMemberships = checked(totalMemberships + members.Count);
+            if (totalMemberships > MaximumTotalGroupMemberships)
+            {
+                throw new ContractException(
+                    $"Private UniFi client-group response exceeded the safety limit of {MaximumTotalGroupMemberships} total memberships.");
             }
 
             var normalizedMembers = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
@@ -527,12 +647,15 @@ public sealed partial class ClientHistoryReadService
 
     private JsonObject ProjectConnected(ConnectedClient client, IReadOnlyList<ClientGroup> groups)
     {
+        var nameAuthority = client.NameSourceField == "macAddress"
+            ? "fallback-identifier"
+            : "authoritative-current";
         var provenance = new JsonObject
         {
             ["name"] = FieldProvenance(
                 "official-network-integration-api",
                 client.NameSourceField,
-                "authoritative-current"),
+                nameAuthority),
             ["macAddress"] = FieldProvenance(
                 "official-network-integration-api",
                 "macAddress",
@@ -541,25 +664,37 @@ public sealed partial class ClientHistoryReadService
                 "official-network-integration-api",
                 "presence in getConnectedClientOverviewPage",
                 "authoritative-current"),
+            ["classification"] = FieldProvenance(
+                "connector-classification",
+                "presence in official current overview",
+                "derived"),
             ["groups"] = FieldProvenance(
                 "private-v2-network-members-groups-api",
                 "members joined by macAddress",
                 "configured-membership")
         };
-        if (client.IpAddress is not null)
-        {
-            provenance["ipAddress"] = FieldProvenance(
+        provenance["ipAddress"] = client.IpAddress is not null
+            ? FieldProvenance(
                 "official-network-integration-api",
                 client.IpSourceField!,
-                "authoritative-current");
-        }
-        if (client.ConnectedAt is not null)
-        {
-            provenance["connectedAt"] = FieldProvenance(
+                "authoritative-current")
+            : UnavailableFieldProvenance(
+                "official-network-integration-api",
+                "ipAddress",
+                "The official current-client record did not include an IP address.");
+        provenance["connectedAt"] = client.ConnectedAt is not null
+            ? FieldProvenance(
                 "official-network-integration-api",
                 "connectedAt",
-                "authoritative-current");
-        }
+                "authoritative-current")
+            : UnavailableFieldProvenance(
+                "official-network-integration-api",
+                "connectedAt",
+                "The official current-client record did not include a connection timestamp.");
+        provenance["lastSeenAt"] = UnavailableFieldProvenance(
+            "official-network-integration-api",
+            "not exposed by getConnectedClientOverviewPage",
+            "The authoritative current-client overview does not expose historical last-seen evidence.");
 
         return new JsonObject
         {
@@ -577,12 +712,15 @@ public sealed partial class ClientHistoryReadService
 
     private JsonObject ProjectOffline(HistoryClient client, IReadOnlyList<ClientGroup> groups)
     {
+        var nameAuthority = client.NameSourceField == "mac"
+            ? "fallback-identifier"
+            : "historical";
         var provenance = new JsonObject
         {
             ["name"] = FieldProvenance(
                 "private-v2-client-history-api",
                 client.NameSourceField,
-                "historical"),
+                nameAuthority),
             ["macAddress"] = FieldProvenance(
                 "private-v2-client-history-api",
                 "mac",
@@ -591,25 +729,33 @@ public sealed partial class ClientHistoryReadService
                 "connector-classification",
                 "absent from current official overview and present in bounded history",
                 "derived"),
+            ["classification"] = FieldProvenance(
+                "connector-classification",
+                "absent from current official overview and present in bounded history",
+                "derived"),
             ["groups"] = FieldProvenance(
                 "private-v2-network-members-groups-api",
                 "members joined by mac",
                 "configured-membership")
         };
-        if (client.IpAddress is not null)
-        {
-            provenance["ipAddress"] = FieldProvenance(
+        provenance["ipAddress"] = client.IpAddress is not null
+            ? FieldProvenance(
                 "private-v2-client-history-api",
                 client.IpSourceField!,
-                "historical");
-        }
-        if (client.LastSeenAt is not null)
-        {
-            provenance["lastSeenAt"] = FieldProvenance(
+                "historical")
+            : UnavailableFieldProvenance(
+                "private-v2-client-history-api",
+                "ip or last_ip",
+                "The bounded history record did not include an IP address.");
+        provenance["lastSeenAt"] = client.LastSeenAt is not null
+            ? FieldProvenance(
                 "private-v2-client-history-api",
                 "last_seen",
-                "historical-evidence");
-        }
+                "historical-evidence")
+            : UnavailableFieldProvenance(
+                "private-v2-client-history-api",
+                "last_seen",
+                "The bounded history record did not include last-seen evidence.");
 
         return new JsonObject
         {
@@ -648,7 +794,23 @@ public sealed partial class ClientHistoryReadService
                 ["state"] = FieldProvenance(
                     "connector-classification",
                     "absent from current official overview and bounded history response",
-                    "derived-unavailable")
+                    "derived-unavailable"),
+                ["classification"] = FieldProvenance(
+                    "connector-classification",
+                    "configured membership with no current or bounded-history record",
+                    "derived"),
+                ["name"] = UnavailableFieldProvenance(
+                    "private-v2-network-members-groups-api",
+                    "not available from configured membership",
+                    "Configured membership supplies no client name."),
+                ["ipAddress"] = UnavailableFieldProvenance(
+                    "private-v2-network-members-groups-api",
+                    "not available from configured membership",
+                    "Configured membership supplies no IP address."),
+                ["lastSeenAt"] = UnavailableFieldProvenance(
+                    "private-v2-network-members-groups-api",
+                    "not available from configured membership",
+                    "Configured membership supplies no last-seen evidence.")
             }
         };
 
@@ -663,8 +825,34 @@ public sealed partial class ClientHistoryReadService
     {
         ["source"] = source,
         ["field"] = field,
-        ["authority"] = authority
+        ["authority"] = authority,
+        ["availability"] = "available"
     };
+
+    private static JsonObject UnavailableFieldProvenance(string source, string field, string reason) => new()
+    {
+        ["source"] = source,
+        ["field"] = field,
+        ["authority"] = "unavailable",
+        ["availability"] = "unavailable",
+        ["reason"] = reason
+    };
+
+    private static void ValidateProjectedGroupReferences(
+        IEnumerable<IReadOnlyList<ClientGroup>> connectedGroups,
+        IEnumerable<IReadOnlyList<ClientGroup>> offlineGroups,
+        IEnumerable<IReadOnlyList<ClientGroup>> missingGroups)
+    {
+        var total = connectedGroups
+            .Concat(offlineGroups)
+            .Concat(missingGroups)
+            .Sum(groups => groups.Count);
+        if (total > MaximumProjectedGroupReferences)
+        {
+            throw new ContractException(
+                $"Projected client-history output exceeded the safety limit of {MaximumProjectedGroupReferences} group references.");
+        }
+    }
 
     private static JsonObject CreatePageMetadata(int total, int returned, int offset, int limit) => new()
     {
@@ -713,13 +901,15 @@ public sealed partial class ClientHistoryReadService
         DateTimeOffset observedAt,
         string reasonCode,
         string reason,
+        string source,
+        string? fixedResource,
+        string? operationId,
         UnifiApiException? exception)
     {
         var metadata = new JsonObject
         {
             ["status"] = "notSupported",
-            ["source"] = "private-v2-client-history-api",
-            ["fixedResource"] = FixedHistoryResource,
+            ["source"] = source,
             ["readOnly"] = true,
             ["httpMethod"] = "GET",
             ["rawPrivateResponsesReturned"] = false,
@@ -745,6 +935,14 @@ public sealed partial class ClientHistoryReadService
                 "No client-history audit was returned because the fixed endpoint or its response contract was unavailable.",
             ["observedAt"] = observedAt.ToString("O", CultureInfo.InvariantCulture)
         };
+        if (fixedResource is not null)
+        {
+            metadata["fixedResource"] = fixedResource;
+        }
+        if (operationId is not null)
+        {
+            metadata["operationId"] = operationId;
+        }
         if (exception is not null)
         {
             metadata["httpStatus"] = (int)exception.StatusCode;
@@ -904,21 +1102,68 @@ public sealed partial class ClientHistoryReadService
         return timestamp.ToString("O", CultureInfo.InvariantCulture);
     }
 
-    private static int? ReadInteger(JsonNode? value)
+    private static ConnectedPageMetadata ValidateConnectedPageMetadata(
+        JsonObject response,
+        JsonArray page,
+        int requestedOffset,
+        int requestedLimit)
+    {
+        var count = ReadRequiredNonNegativeLong(response["count"], "count");
+        var offset = ReadRequiredNonNegativeLong(response["offset"], "offset");
+        var limit = ReadRequiredNonNegativeLong(response["limit"], "limit");
+        var totalCount = ReadRequiredNonNegativeLong(response["totalCount"], "totalCount");
+
+        if (count != page.Count)
+        {
+            throw new ContractException(
+                "Official connected-client page count did not match the number of data records.");
+        }
+        if (offset != requestedOffset)
+        {
+            throw new ContractException(
+                "Official connected-client page offset did not match the requested offset.");
+        }
+        if (limit != requestedLimit)
+        {
+            throw new ContractException(
+                "Official connected-client page limit did not match the requested limit.");
+        }
+        if (totalCount < offset + count)
+        {
+            throw new ContractException(
+                "Official connected-client totalCount was smaller than the returned page range.");
+        }
+
+        return new ConnectedPageMetadata(totalCount);
+    }
+
+    private static long ReadRequiredNonNegativeLong(JsonNode? value, string field)
     {
         if (value is not JsonValue scalar)
         {
-            return null;
+            throw new ContractException(
+                $"Official connected-client page did not include a valid nonnegative {field}.");
         }
 
-        if (scalar.TryGetValue<int>(out var integer))
+        long number;
+        if (!scalar.TryGetValue<long>(out number))
         {
-            return integer;
+            if (!scalar.TryGetValue<int>(out var integer))
+            {
+                throw new ContractException(
+                    $"Official connected-client page did not include a valid nonnegative {field}.");
+            }
+
+            number = integer;
         }
 
-        return scalar.TryGetValue<long>(out var longValue) && longValue is >= int.MinValue and <= int.MaxValue
-            ? (int)longValue
-            : null;
+        if (number < 0)
+        {
+            throw new ContractException(
+                $"Official connected-client page did not include a valid nonnegative {field}.");
+        }
+
+        return number;
     }
 
     private static bool TryReadLong(JsonNode? value, out long result)
@@ -952,6 +1197,8 @@ public sealed partial class ClientHistoryReadService
     private sealed record ConnectedReadResult(
         IReadOnlyList<ConnectedClient> Clients,
         int DuplicateMacCount);
+
+    private sealed record ConnectedPageMetadata(long TotalCount);
 
     private sealed record ConnectedClient(
         string Name,
