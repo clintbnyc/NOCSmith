@@ -34,5 +34,14 @@ public sealed class ToolMetadataTests
                 Assert.False(tool.Attribute.Destructive, tool.Attribute.Name);
             }
         }
+
+        var openWorldTools = tools
+            .Where(tool => tool.Attribute!.OpenWorld)
+            .Select(tool => tool.Attribute!.Name)
+            .OrderBy(name => name, StringComparer.Ordinal)
+            .ToArray();
+        Assert.Equal(
+            new[] { "unifi_isp_metrics", "unifi_site_manager" },
+            openWorldTools);
     }
 }

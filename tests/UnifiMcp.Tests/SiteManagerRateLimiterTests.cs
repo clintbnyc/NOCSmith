@@ -50,4 +50,31 @@ public sealed class SiteManagerRateLimiterTests
         cancellation.Cancel();
         await Assert.ThrowsAnyAsync<OperationCanceledException>(() => waiting);
     }
+
+    [Fact]
+    public async Task Provider_retry_after_defers_all_new_permits()
+    {
+        var now = new DateTimeOffset(2026, 7, 25, 12, 0, 0, TimeSpan.Zero);
+        var delays = new List<TimeSpan>();
+        var limiter = new SiteManagerRateLimiter(
+            permitLimit: 10,
+            window: TimeSpan.FromMinutes(1),
+            queueLimit: 2,
+            getUtcNow: () => now,
+            delay: (value, _) =>
+            {
+                delays.Add(value);
+                now += value;
+                return Task.CompletedTask;
+            });
+
+        limiter.DeferUntil(now.AddSeconds(30));
+        Assert.True(limiter.Describe()["providerCooldownActive"]!.GetValue<bool>());
+
+        await limiter.WaitAsync(CancellationToken.None);
+
+        Assert.Equal(TimeSpan.FromSeconds(30), Assert.Single(delays));
+        Assert.False(limiter.Describe()["providerCooldownActive"]!.GetValue<bool>());
+        Assert.Equal(1, limiter.Describe()["requestsInCurrentWindow"]!.GetValue<int>());
+    }
 }

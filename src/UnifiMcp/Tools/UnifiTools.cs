@@ -50,6 +50,9 @@ public static class UnifiTools
                     ["tags"] = new JsonArray(operation.Tags.Select(tag => (JsonNode?)JsonValue.Create(tag)).ToArray())
                 })
                 .ToArray());
+            var siteManagerDescription = siteManager.Describe();
+            siteManagerDescription["hostMapping"] =
+                await siteManager.GetHostMappingStatusAsync(cancellationToken).ConfigureAwait(false);
             var data = new JsonObject
             {
                 ["baseUrl"] = configuration.BaseUri.ToString().TrimEnd('/'),
@@ -62,7 +65,7 @@ public static class UnifiTools
                 ["probeWarning"] = contracts.LastProbeWarning,
                 ["knownResponseLimitations"] = ResponseMetadata.GetAllKnownLimitations(contract, legacyEnrichment.Enabled),
                 ["legacyReadEnrichment"] = legacyEnrichment.Describe(),
-                ["siteManager"] = siteManager.Describe(),
+                ["siteManager"] = siteManagerDescription,
                 ["siteManagerDeviceEnrichment"] = siteManagerEnrichment.Describe(),
                 ["clientGroups"] = clientGroups.Describe(),
                 ["systemLogs"] = systemLogs.Describe(),
@@ -73,7 +76,7 @@ public static class UnifiTools
                 data);
         });
 
-    [McpServerTool(Name = "unifi_site_manager", Title = "Read UniFi Site Manager fleet data", ReadOnly = true, Destructive = false, OpenWorld = false, UseStructuredContent = true)]
+    [McpServerTool(Name = "unifi_site_manager", Title = "Read UniFi Site Manager fleet data", ReadOnly = true, Destructive = false, OpenWorld = true, UseStructuredContent = true)]
     [Description("Read stable-v1 UniFi Site Manager host, site, and device inventory. Actions: hosts, host, sites, devices. Uses cursor pagination, never calls Early Access, SD-WAN, Cloud Connector, or write endpoints.")]
     public static Task<ToolResponse> SiteManager(
         SiteManagerReadService siteManager,
@@ -89,7 +92,7 @@ public static class UnifiTools
             nextToken,
             cancellationToken));
 
-    [McpServerTool(Name = "unifi_isp_metrics", Title = "Read UniFi Site Manager ISP metrics", ReadOnly = true, Destructive = false, OpenWorld = false, UseStructuredContent = true)]
+    [McpServerTool(Name = "unifi_isp_metrics", Title = "Read UniFi Site Manager ISP metrics", ReadOnly = true, Destructive = false, OpenWorld = true, UseStructuredContent = true)]
     [Description("Read stable-v1 ISP history. Interval is 5m or 1h. Use duration (24h for 5m; 7d or 30d for 1h) or RFC3339 timestamps. Optional targets is an array of objects containing hostId and siteId.")]
     public static Task<ToolResponse> IspMetrics(
         SiteManagerReadService siteManager,

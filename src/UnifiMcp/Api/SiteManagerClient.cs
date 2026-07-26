@@ -13,6 +13,8 @@ namespace UnifiMcp.Api;
 public sealed class SiteManagerClient : ISiteManagerClient, IDisposable
 {
     private const int MaximumAttempts = 3;
+    private const int MaximumConcurrentRequests = 4;
+    private const int MaximumConcurrencyQueue = 100;
     private const int MaximumResponseBytes = 10 * 1024 * 1024;
     private static readonly TimeSpan MaximumRetryWait = TimeSpan.FromMinutes(5);
 
@@ -21,10 +23,12 @@ public sealed class SiteManagerClient : ISiteManagerClient, IDisposable
     private readonly SecretRedactor _redactor;
     private readonly ILogger<SiteManagerClient> _logger;
     private readonly SiteManagerRateLimiter _rateLimiter;
-    private readonly SemaphoreSlim _concurrency = new(4, 4);
+    private readonly SemaphoreSlim _concurrency =
+        new(MaximumConcurrentRequests, MaximumConcurrentRequests);
     private readonly Func<DateTimeOffset> _getUtcNow;
     private readonly Func<TimeSpan, CancellationToken, Task> _delay;
     private readonly Func<int, TimeSpan> _backoff;
+    private int _waitingForConcurrency;
 
     public SiteManagerClient(
         UnifiConfiguration configuration,
@@ -39,9 +43,11 @@ public sealed class SiteManagerClient : ISiteManagerClient, IDisposable
         _apiKey = configuration.SiteManagerApiKey;
         _redactor = redactor;
         _logger = logger;
-        _rateLimiter = rateLimiter ?? new SiteManagerRateLimiter();
         _getUtcNow = getUtcNow ?? (() => DateTimeOffset.UtcNow);
         _delay = delay ?? Task.Delay;
+        _rateLimiter = rateLimiter ?? new SiteManagerRateLimiter(
+            getUtcNow: _getUtcNow,
+            delay: _delay);
         _backoff = backoff ?? (attempt =>
             TimeSpan.FromMilliseconds((250 * Math.Pow(2, attempt - 1)) + Random.Shared.Next(0, 101)));
         _httpClient = handler is null ? new HttpClient() : new HttpClient(handler, disposeHandler: true);
@@ -82,7 +88,9 @@ public sealed class SiteManagerClient : ISiteManagerClient, IDisposable
         ["readOnly"] = true,
         ["maximumAttempts"] = MaximumAttempts,
         ["maximumRetryWaitSeconds"] = MaximumRetryWait.TotalSeconds,
-        ["maximumConcurrentRequests"] = 4,
+        ["maximumConcurrentRequests"] = MaximumConcurrentRequests,
+        ["concurrencyQueueLimit"] = MaximumConcurrencyQueue,
+        ["waitingForConcurrency"] = Volatile.Read(ref _waitingForConcurrency),
         ["rateLimit"] = _rateLimiter.Describe()
     };
 
@@ -107,102 +115,82 @@ public sealed class SiteManagerClient : ISiteManagerClient, IDisposable
         Exception? lastException = null;
         for (var attempt = 1; attempt <= MaximumAttempts; attempt++)
         {
-            await _rateLimiter.WaitAsync(cancellationToken).ConfigureAwait(false);
-            await _concurrency.WaitAsync(cancellationToken).ConfigureAwait(false);
+            AttemptResponse response;
             try
             {
-                using var request = new HttpRequestMessage(method, relativePath);
-                request.Headers.TryAddWithoutValidation("X-API-Key", _apiKey);
-                if (body is not null)
-                {
-                    request.Content = new StringContent(body.ToJsonString(), Encoding.UTF8, "application/json");
-                }
-
-                HttpResponseMessage response;
-                try
-                {
-                    response = await _httpClient.SendAsync(
-                        request,
-                        HttpCompletionOption.ResponseHeadersRead,
-                        cancellationToken).ConfigureAwait(false);
-                }
-                catch (TaskCanceledException) when (
-                    !cancellationToken.IsCancellationRequested &&
-                    attempt < MaximumAttempts)
-                {
-                    lastException = new SiteManagerApiException(
-                        HttpStatusCode.RequestTimeout,
-                        "UniFi Site Manager request timed out.");
-                    await DelayForRetryAsync(_backoff(attempt), attempt, cancellationToken).ConfigureAwait(false);
-                    continue;
-                }
-                catch (HttpRequestException exception) when (attempt < MaximumAttempts)
-                {
-                    lastException = exception;
-                    await DelayForRetryAsync(_backoff(attempt), attempt, cancellationToken).ConfigureAwait(false);
-                    continue;
-                }
-
-                using (response)
-                {
-                    var content = await ReadBoundedContentAsync(response, cancellationToken).ConfigureAwait(false);
-                    if (response.IsSuccessStatusCode)
-                    {
-                        return ParseResponse(content, response.StatusCode);
-                    }
-
-                    var retryAt = ReadRetryAt(response.Headers.RetryAfter);
-                    var retryDelay = retryAt is null ? _backoff(attempt) : retryAt.Value - _getUtcNow();
-                    if (retryDelay < TimeSpan.Zero)
-                    {
-                        retryDelay = TimeSpan.Zero;
-                    }
-
-                    if (response.StatusCode == HttpStatusCode.TooManyRequests)
-                    {
-                        var exception = CreateApiException(response.StatusCode, content, retryAt);
-                        if (attempt == MaximumAttempts || retryDelay > MaximumRetryWait)
-                        {
-                            throw exception;
-                        }
-
-                        lastException = exception;
-                        await DelayForRetryAsync(retryDelay, attempt, cancellationToken).ConfigureAwait(false);
-                        continue;
-                    }
-
-                    if ((int)response.StatusCode is >= 500 and <= 599 && attempt < MaximumAttempts)
-                    {
-                        if (retryDelay > MaximumRetryWait)
-                        {
-                            throw CreateApiException(response.StatusCode, content, retryAt);
-                        }
-
-                        lastException = CreateApiException(response.StatusCode, content, retryAt);
-                        await DelayForRetryAsync(retryDelay, attempt, cancellationToken).ConfigureAwait(false);
-                        continue;
-                    }
-
-                    throw CreateApiException(response.StatusCode, content, retryAt);
-                }
+                response = await SendOnceAsync(
+                    method,
+                    relativePath,
+                    body,
+                    cancellationToken).ConfigureAwait(false);
             }
             catch (TaskCanceledException) when (!cancellationToken.IsCancellationRequested)
+            {
+                var exception = new SiteManagerApiException(
+                    HttpStatusCode.RequestTimeout,
+                    "UniFi Site Manager request timed out.");
+                if (attempt == MaximumAttempts)
+                {
+                    throw exception;
+                }
+
+                lastException = exception;
+                await DelayForRetryAsync(_backoff(attempt), attempt, cancellationToken).ConfigureAwait(false);
+                continue;
+            }
+            catch (HttpRequestException exception)
             {
                 if (attempt == MaximumAttempts)
                 {
                     throw new SiteManagerApiException(
-                        HttpStatusCode.RequestTimeout,
-                        "UniFi Site Manager request timed out.");
+                        HttpStatusCode.ServiceUnavailable,
+                        "UniFi Site Manager transport failed after three attempts.");
                 }
 
-                lastException = new SiteManagerApiException(
-                    HttpStatusCode.RequestTimeout,
-                    "UniFi Site Manager request timed out.");
+                lastException = exception;
+                await DelayForRetryAsync(_backoff(attempt), attempt, cancellationToken).ConfigureAwait(false);
+                continue;
             }
-            finally
+
+            if (response.IsSuccess)
             {
-                _concurrency.Release();
+                return response.Value;
             }
+
+            var retryAt = response.RetryAt;
+            var retryDelay = retryAt is null ? _backoff(attempt) : retryAt.Value - _getUtcNow();
+            if (retryDelay < TimeSpan.Zero)
+            {
+                retryDelay = TimeSpan.Zero;
+            }
+
+            if (response.StatusCode == HttpStatusCode.TooManyRequests)
+            {
+                var exception = CreateApiException(response.StatusCode, response.Content, retryAt);
+                _rateLimiter.DeferUntil(retryAt ?? (_getUtcNow() + retryDelay));
+                if (attempt == MaximumAttempts || retryDelay > MaximumRetryWait)
+                {
+                    throw exception;
+                }
+
+                lastException = exception;
+                await DelayForRetryAsync(retryDelay, attempt, cancellationToken).ConfigureAwait(false);
+                continue;
+            }
+
+            if ((int)response.StatusCode is >= 500 and <= 599 && attempt < MaximumAttempts)
+            {
+                if (retryDelay > MaximumRetryWait)
+                {
+                    throw CreateApiException(response.StatusCode, response.Content, retryAt);
+                }
+
+                lastException = CreateApiException(response.StatusCode, response.Content, retryAt);
+                await DelayForRetryAsync(retryDelay, attempt, cancellationToken).ConfigureAwait(false);
+                continue;
+            }
+
+            throw CreateApiException(response.StatusCode, response.Content, retryAt);
         }
 
         if (lastException is SiteManagerApiException apiException)
@@ -213,6 +201,73 @@ public sealed class SiteManagerClient : ISiteManagerClient, IDisposable
         throw new SiteManagerApiException(
             HttpStatusCode.ServiceUnavailable,
             "UniFi Site Manager transport failed after three attempts.");
+    }
+
+    private async Task<AttemptResponse> SendOnceAsync(
+        HttpMethod method,
+        string relativePath,
+        JsonNode? body,
+        CancellationToken cancellationToken)
+    {
+        await WaitForConcurrencyAsync(cancellationToken).ConfigureAwait(false);
+        try
+        {
+            await _rateLimiter.WaitAsync(cancellationToken).ConfigureAwait(false);
+            using var request = new HttpRequestMessage(method, relativePath);
+            request.Headers.TryAddWithoutValidation("X-API-Key", _apiKey);
+            if (body is not null)
+            {
+                request.Content = new StringContent(body.ToJsonString(), Encoding.UTF8, "application/json");
+            }
+
+            using var response = await _httpClient.SendAsync(
+                request,
+                HttpCompletionOption.ResponseHeadersRead,
+                cancellationToken).ConfigureAwait(false);
+            var content = await ReadBoundedContentAsync(response, cancellationToken).ConfigureAwait(false);
+            return response.IsSuccessStatusCode
+                ? new AttemptResponse(
+                    true,
+                    ParseResponse(content, response.StatusCode),
+                    response.StatusCode,
+                    content,
+                    null)
+                : new AttemptResponse(
+                    false,
+                    null,
+                    response.StatusCode,
+                    content,
+                    ReadRetryAt(response.Headers.RetryAfter));
+        }
+        finally
+        {
+            _concurrency.Release();
+        }
+    }
+
+    private async Task WaitForConcurrencyAsync(CancellationToken cancellationToken)
+    {
+        if (_concurrency.Wait(0))
+        {
+            return;
+        }
+
+        var waiting = Interlocked.Increment(ref _waitingForConcurrency);
+        if (waiting > MaximumConcurrencyQueue)
+        {
+            Interlocked.Decrement(ref _waitingForConcurrency);
+            throw new SiteManagerRateLimitQueueException(
+                $"The Site Manager concurrency queue is full ({MaximumConcurrencyQueue} waiting request(s)).");
+        }
+
+        try
+        {
+            await _concurrency.WaitAsync(cancellationToken).ConfigureAwait(false);
+        }
+        finally
+        {
+            Interlocked.Decrement(ref _waitingForConcurrency);
+        }
     }
 
     private async Task DelayForRetryAsync(
@@ -371,4 +426,11 @@ public sealed class SiteManagerClient : ISiteManagerClient, IDisposable
                 nameof(relativePath));
         }
     }
+
+    private sealed record AttemptResponse(
+        bool IsSuccess,
+        JsonNode? Value,
+        HttpStatusCode StatusCode,
+        string Content,
+        DateTimeOffset? RetryAt);
 }

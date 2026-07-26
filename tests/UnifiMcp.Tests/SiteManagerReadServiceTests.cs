@@ -126,6 +126,38 @@ public sealed class SiteManagerReadServiceTests
     }
 
     [Fact]
+    public async Task Cancelled_waiter_does_not_leave_stale_inflight_data_after_cache_expiry()
+    {
+        var clock = new MutableTimeProvider(
+            new DateTimeOffset(2026, 7, 25, 12, 0, 0, TimeSpan.Zero));
+        var release = new TaskCompletionSource<JsonNode?>(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        var client = new FakeSiteManagerClient
+        {
+            Get = _ => release.Task
+        };
+        var service = CreateService(client, clock);
+        using var cancellation = new CancellationTokenSource();
+        var first = service.ReadInventoryAsync(
+            "hosts",
+            null,
+            null,
+            null,
+            cancellation.Token);
+
+        cancellation.Cancel();
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(() => first);
+        release.SetResult(new JsonObject { ["data"] = new JsonArray() });
+        await Task.Yield();
+        await Task.Yield();
+
+        clock.Advance(TimeSpan.FromMinutes(5).Add(TimeSpan.FromTicks(1)));
+        await service.ReadInventoryAsync("hosts", null, null, null, CancellationToken.None);
+
+        Assert.Equal(2, client.GetPaths.Count);
+    }
+
+    [Fact]
     public async Task Isp_metrics_support_get_duration_and_targeted_query()
     {
         var client = new FakeSiteManagerClient();
@@ -252,6 +284,54 @@ public sealed class SiteManagerReadServiceTests
     }
 
     [Fact]
+    public async Task Host_mapping_is_verified_across_cursor_pages()
+    {
+        var client = new FakeSiteManagerClient
+        {
+            Get = path => Task.FromResult<JsonNode?>(
+                path.Contains("nextToken", StringComparison.Ordinal)
+                    ? new JsonObject
+                    {
+                        ["data"] = new JsonArray(
+                            new JsonObject { ["id"] = "host-2" })
+                    }
+                    : new JsonObject
+                    {
+                        ["data"] = new JsonArray(
+                            new JsonObject { ["id"] = "host-1" }),
+                        ["nextToken"] = "page-2"
+                    })
+        };
+        var service = CreateService(client, localHostId: "host-2");
+
+        var status = await service.GetHostMappingStatusAsync(CancellationToken.None);
+
+        Assert.Equal("mapped", status["status"]!.GetValue<string>());
+        Assert.True(status["verified"]!.GetValue<bool>());
+        Assert.Equal(2, client.GetPaths.Count);
+    }
+
+    [Fact]
+    public async Task Configured_host_mapping_reports_not_found()
+    {
+        var client = new FakeSiteManagerClient
+        {
+            Get = _ => Task.FromResult<JsonNode?>(new JsonObject
+            {
+                ["data"] = new JsonArray(
+                    new JsonObject { ["id"] = "different-host" })
+            })
+        };
+        var service = CreateService(client, localHostId: "missing-host");
+
+        var status = await service.GetHostMappingStatusAsync(CancellationToken.None);
+
+        Assert.Equal("notFound", status["status"]!.GetValue<string>());
+        Assert.True(status["configured"]!.GetValue<bool>());
+        Assert.True(status["verified"]!.GetValue<bool>());
+    }
+
+    [Fact]
     public async Task Invalid_metric_combinations_are_rejected_before_network_access()
     {
         var client = new FakeSiteManagerClient();
@@ -270,16 +350,38 @@ public sealed class SiteManagerReadServiceTests
         Assert.Empty(client.Queries);
     }
 
+    [Fact]
+    public async Task Metric_target_properties_must_be_strings()
+    {
+        var client = new FakeSiteManagerClient();
+        var service = CreateService(client);
+
+        var exception = await Assert.ThrowsAsync<ContractException>(() =>
+            service.ReadIspMetricsAsync(
+                "5m",
+                null,
+                "2026-07-25T11:00:00Z",
+                "2026-07-25T12:00:00Z",
+                new JsonArray(
+                    new JsonObject { ["hostId"] = 123, ["siteId"] = "site-1" }),
+                CancellationToken.None));
+
+        Assert.Equal("hostId must be a string.", exception.Message);
+        Assert.Empty(client.Queries);
+    }
+
     private static SiteManagerReadService CreateService(
         FakeSiteManagerClient client,
-        TimeProvider? timeProvider = null)
+        TimeProvider? timeProvider = null,
+        string? localHostId = null)
     {
         var configuration = new UnifiConfiguration(
             new Uri(UnifiConfiguration.DefaultBaseUrl + "/"),
             "local-key",
             null,
             TimeSpan.FromSeconds(5),
-            SiteManagerApiKey: "site-key");
+            SiteManagerApiKey: "site-key",
+            SiteManagerLocalHostId: localHostId);
         return new SiteManagerReadService(
             configuration,
             client,

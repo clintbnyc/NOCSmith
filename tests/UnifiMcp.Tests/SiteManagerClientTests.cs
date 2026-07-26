@@ -134,6 +134,8 @@ public sealed class SiteManagerClientTests
         Assert.Equal(retryAt, exception.RetryAt);
         Assert.Single(handler.Requests);
         Assert.Empty(delays);
+        Assert.True(
+            client.Describe()["rateLimit"]!["providerCooldownActive"]!.GetValue<bool>());
     }
 
     [Fact]
@@ -273,12 +275,67 @@ public sealed class SiteManagerClientTests
         Assert.Empty(handler.Requests);
     }
 
+    [Fact]
+    public async Task Exhausted_transport_failure_is_normalized()
+    {
+        var handler = new ThrowingHandler();
+        using var client = CreateClient(
+            handler,
+            delay: (_, _) => Task.CompletedTask,
+            backoff: _ => TimeSpan.Zero);
+
+        var exception = await Assert.ThrowsAsync<SiteManagerApiException>(() =>
+            client.GetAsync("v1/hosts", CancellationToken.None));
+
+        Assert.Equal(HttpStatusCode.ServiceUnavailable, exception.StatusCode);
+        Assert.Equal("UniFi Site Manager transport failed after three attempts.", exception.Message);
+        Assert.Equal(3, handler.Attempts);
+    }
+
+    [Fact]
+    public async Task Concurrency_queue_is_bounded()
+    {
+        using var cancellation = new CancellationTokenSource();
+        var handler = new BlockingHandler();
+        using var client = CreateClient(handler);
+        var active = Enumerable.Range(0, 4)
+            .Select(_ => client.GetAsync("v1/hosts", cancellation.Token))
+            .ToArray();
+        await WaitUntilAsync(() => handler.Attempts == 4);
+        var queued = Enumerable.Range(0, 100)
+            .Select(_ => client.GetAsync("v1/sites", cancellation.Token))
+            .ToArray();
+        await WaitUntilAsync(() =>
+            client.Describe()["waitingForConcurrency"]!.GetValue<int>() == 100);
+
+        await Assert.ThrowsAsync<SiteManagerRateLimitQueueException>(() =>
+            client.GetAsync("v1/devices", cancellation.Token));
+
+        cancellation.Cancel();
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(() =>
+            Task.WhenAll(active.Concat(queued)));
+    }
+
     private static SiteManagerClient CreateClient(
         HttpMessageHandler handler,
         string? siteManagerKey = "site-manager-key",
         Func<TimeSpan, CancellationToken, Task>? delay = null,
-        Func<int, TimeSpan>? backoff = null) =>
-        new(
+        Func<int, TimeSpan>? backoff = null)
+    {
+        var now = Now;
+        var underlyingDelay = delay ??
+            ((TimeSpan value, CancellationToken cancellationToken) =>
+                Task.Delay(value, cancellationToken));
+        async Task DelayAndAdvance(TimeSpan value, CancellationToken cancellationToken)
+        {
+            await underlyingDelay(value, cancellationToken).ConfigureAwait(false);
+            now += value;
+        }
+
+        var limiter = new SiteManagerRateLimiter(
+            getUtcNow: () => now,
+            delay: DelayAndAdvance);
+        return new SiteManagerClient(
             new UnifiConfiguration(
                 new Uri(UnifiConfiguration.DefaultBaseUrl + "/"),
                 "local-key",
@@ -288,13 +345,29 @@ public sealed class SiteManagerClientTests
             new SecretRedactor("local-key", siteManagerKey),
             NullLogger<SiteManagerClient>.Instance,
             handler,
-            new SiteManagerRateLimiter(),
-            () => Now,
-            delay,
+            limiter,
+            () => now,
+            DelayAndAdvance,
             backoff);
+    }
 
     private static HttpResponseMessage JsonResponse(HttpStatusCode status, string body) =>
         new(status) { Content = new StringContent(body, Encoding.UTF8, "application/json") };
+
+    private static async Task WaitUntilAsync(Func<bool> condition)
+    {
+        for (var attempt = 0; attempt < 1_000; attempt++)
+        {
+            if (condition())
+            {
+                return;
+            }
+
+            await Task.Delay(1).ConfigureAwait(false);
+        }
+
+        throw new TimeoutException("The expected concurrent test state was not reached.");
+    }
 
     private sealed class RecordingHandler : HttpMessageHandler
     {
@@ -319,6 +392,35 @@ public sealed class SiteManagerClientTests
                     ? null
                     : await request.Content.ReadAsStringAsync(cancellationToken).ConfigureAwait(false)));
             return _response(request);
+        }
+    }
+
+    private sealed class ThrowingHandler : HttpMessageHandler
+    {
+        public int Attempts { get; private set; }
+
+        protected override Task<HttpResponseMessage> SendAsync(
+            HttpRequestMessage request,
+            CancellationToken cancellationToken)
+        {
+            Attempts++;
+            throw new HttpRequestException("simulated transport failure");
+        }
+    }
+
+    private sealed class BlockingHandler : HttpMessageHandler
+    {
+        private int _attempts;
+
+        public int Attempts => Volatile.Read(ref _attempts);
+
+        protected override async Task<HttpResponseMessage> SendAsync(
+            HttpRequestMessage request,
+            CancellationToken cancellationToken)
+        {
+            Interlocked.Increment(ref _attempts);
+            await Task.Delay(Timeout.InfiniteTimeSpan, cancellationToken).ConfigureAwait(false);
+            throw new InvalidOperationException("The blocking handler should only exit through cancellation.");
         }
     }
 
