@@ -29,7 +29,8 @@ public sealed class ResponseMetadataTests
     [Fact]
     public void Device_details_report_fields_missing_from_official_contract()
     {
-        var limitations = ResponseMetadata.GetKnownLimitations("getAdoptedDeviceDetails", "10.3.58");
+        var contract = OpenApiContract.LoadEmbedded();
+        var limitations = ResponseMetadata.GetKnownLimitations("getAdoptedDeviceDetails", contract);
 
         Assert.Equal(3, limitations.Count);
         var labels = limitations.OfType<JsonObject>().Single(value => value["area"]!.GetValue<string>() == "interfaces.ports.labels");
@@ -43,7 +44,7 @@ public sealed class ResponseMetadataTests
         Assert.Equal(
             "normalized UniFi UI role (Edge versus Participant)",
             Assert.Single(uiRole["stillMissing"]!.AsArray())!.GetValue<string>());
-        Assert.Contains("10.3.58", labels["reason"]!.GetValue<string>(), StringComparison.Ordinal);
+        Assert.Contains("10.4.57", labels["reason"]!.GetValue<string>(), StringComparison.Ordinal);
     }
 
     [Fact]
@@ -51,7 +52,7 @@ public sealed class ResponseMetadataTests
     {
         var limitations = ResponseMetadata.GetKnownLimitations(
             "getAdoptedDeviceDetails",
-            "10.3.58",
+            OpenApiContract.LoadEmbedded(),
             legacyReadEnrichmentAvailable: true);
 
         var labels = limitations.OfType<JsonObject>().Single(value => value["area"]!.GetValue<string>() == "interfaces.ports.labels");
@@ -102,7 +103,7 @@ public sealed class ResponseMetadataTests
     [Fact]
     public void Capabilities_can_enumerate_all_known_response_limitations()
     {
-        var limitations = ResponseMetadata.GetAllKnownLimitations("10.3.58");
+        var limitations = ResponseMetadata.GetAllKnownLimitations(OpenApiContract.LoadEmbedded());
 
         Assert.Equal(8, limitations.Count);
         Assert.Contains(

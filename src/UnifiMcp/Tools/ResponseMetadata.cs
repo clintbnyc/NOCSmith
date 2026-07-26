@@ -54,7 +54,7 @@ public static class ResponseMetadata
 
         var limitations = GetKnownLimitations(
             operationId,
-            contracts.Current.Version,
+            contracts.Current,
             legacyReadEnrichmentSucceeded);
         var connector = GetOrCreateConnector(obj);
         connector["sourceOperationId"] = operationId;
@@ -88,32 +88,49 @@ public static class ResponseMetadata
 
     public static JsonArray GetKnownLimitations(
         string operationId,
-        string contractVersion,
+        OpenApiContract contract,
         bool legacyReadEnrichmentAvailable = false)
     {
         var limitations = new JsonArray();
-        if (operationId is DeviceDetailsOperationId or DeviceOverviewOperationId &&
-            string.Equals(contractVersion, "10.3.58", StringComparison.Ordinal))
+        if (operationId is DeviceDetailsOperationId or DeviceOverviewOperationId)
         {
-            limitations.Add(CreateOfficialContractLimitation(
-                operationId,
-                "interfaces.ports.labels",
-                "custom port labels",
-                contractVersion,
-                legacyReadEnrichmentAvailable));
-            limitations.Add(CreateOfficialContractLimitation(
-                operationId,
-                "interfaces.ports.stp",
-                "STP operational/configuration fields",
-                contractVersion,
-                legacyReadEnrichmentAvailable));
+            var prefix = operationId == DeviceOverviewOperationId
+                ? new[] { "data", "interfaces", "ports" }
+                : new[] { "interfaces", "ports" };
+            var labelsAvailable =
+                contract.ResponseSchemaContainsPath(operationId, prefix.Append("label").ToArray()) ||
+                contract.ResponseSchemaContainsPath(operationId, prefix.Append("name").ToArray());
+            var stpAvailable = new[] { "stp", "stpState", "stpRole", "stpPortMode" }
+                .Any(name => contract.ResponseSchemaContainsPath(
+                    operationId,
+                    prefix.Append(name).ToArray()));
+            if (!labelsAvailable)
+            {
+                limitations.Add(CreateOfficialContractLimitation(
+                    operationId,
+                    "interfaces.ports.labels",
+                    "custom port labels",
+                    contract.Version,
+                    legacyReadEnrichmentAvailable));
+            }
+
+            if (!stpAvailable)
+            {
+                limitations.Add(CreateOfficialContractLimitation(
+                    operationId,
+                    "interfaces.ports.stp",
+                    "STP operational/configuration fields",
+                    contract.Version,
+                    legacyReadEnrichmentAvailable));
+            }
+
             limitations.Add(new JsonObject
             {
                 ["operationId"] = operationId,
                 ["area"] = "interfaces.ports.stp.uiRole",
                 ["missingData"] = new JsonArray("STP roles"),
                 ["source"] = "official-contract",
-                ["scope"] = $"official UniFi Network {contractVersion} response",
+                ["scope"] = $"official UniFi Network {contract.Version} response",
                 ["resolutionStatus"] = "unresolved",
                 ["stillMissing"] = new JsonArray("normalized UniFi UI role (Edge versus Participant)"),
                 ["reason"] = "Neither the official response nor the verified legacy projection contains a reliable direct field for the normalized UniFi UI Edge/Participant role."
@@ -139,13 +156,13 @@ public static class ResponseMetadata
     }
 
     public static JsonArray GetAllKnownLimitations(
-        string contractVersion,
+        OpenApiContract contract,
         bool legacyReadEnrichmentAvailable = false)
     {
         var limitations = new JsonArray();
         foreach (var operationId in new[] { DeviceOverviewOperationId, DeviceDetailsOperationId, ClientOverviewOperationId, ClientDetailsOperationId })
         {
-            foreach (var limitation in GetKnownLimitations(operationId, contractVersion, legacyReadEnrichmentAvailable))
+            foreach (var limitation in GetKnownLimitations(operationId, contract, legacyReadEnrichmentAvailable))
             {
                 limitations.Add(limitation?.DeepClone());
             }

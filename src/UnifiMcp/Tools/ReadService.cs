@@ -12,19 +12,22 @@ public sealed class ReadService
     private readonly SiteResolver _siteResolver;
     private readonly SecretRedactor _redactor;
     private readonly LegacyReadEnrichmentService _legacyEnrichment;
+    private readonly SiteManagerDeviceEnrichmentService? _siteManagerEnrichment;
 
     public ReadService(
         ContractProvider contracts,
         IUnifiClient client,
         SiteResolver siteResolver,
         SecretRedactor redactor,
-        LegacyReadEnrichmentService legacyEnrichment)
+        LegacyReadEnrichmentService legacyEnrichment,
+        SiteManagerDeviceEnrichmentService? siteManagerEnrichment = null)
     {
         _contracts = contracts;
         _client = client;
         _siteResolver = siteResolver;
         _redactor = redactor;
         _legacyEnrichment = legacyEnrichment;
+        _siteManagerEnrichment = siteManagerEnrichment;
     }
 
     public async Task<ToolResponse> ExecuteAsync(
@@ -42,6 +45,14 @@ public sealed class ReadService
         var redacted = ResponseMetadata.AnnotatePagination(_redactor.Redact(response), queryParameters);
         redacted = await _legacyEnrichment.EnrichAsync(operation.OperationId, resolvedPath, redacted, cancellationToken)
             .ConfigureAwait(false);
+        if (_siteManagerEnrichment is not null)
+        {
+            redacted = await _siteManagerEnrichment.EnrichAsync(
+                operation.OperationId,
+                redacted,
+                cancellationToken).ConfigureAwait(false);
+        }
+
         redacted = ResponseMetadata.AnnotateCoverage(
             redacted,
             operation.OperationId,

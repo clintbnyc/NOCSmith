@@ -12,7 +12,9 @@ public static class EnvironmentFileLoader
         "UNIFI_BASE_URL",
         "UNIFI_DEFAULT_SITE_ID",
         "UNIFI_TIMEOUT_SECONDS",
-        "UNIFI_ENABLE_LEGACY_READ_ENRICHMENT"
+        "UNIFI_ENABLE_LEGACY_READ_ENRICHMENT",
+        "UNIFI_SITE_API_KEY",
+        "UNIFI_SITE_MANAGER_LOCAL_HOST_ID"
     };
 
     public static string[] LoadAndRemoveOption(string[] args)

@@ -1,7 +1,7 @@
 #!/bin/sh
 set -eu
 
-version="${1:-10.3.58}"
+version="${1:-10.4.57}"
 destination="$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)/contracts/unifi-network.openapi.json"
 temporary="$(mktemp "${TMPDIR:-/tmp}/unifi-openapi.XXXXXX")"
 trap 'rm -f "$temporary"' EXIT HUP INT TERM

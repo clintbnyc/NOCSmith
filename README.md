@@ -1,6 +1,6 @@
 # UniFi MCP Connector
 
-Private, stdio-only MCP access to UniFi Network on pinode. The connector uses the official Integration API by default and supports narrowly projected, opt-in private reads for documentation fields and System Log events unavailable from the official schema. It uses the active UniFi OS Server through the Tailscale HTTPS name:
+Private, stdio-only MCP access to UniFi Network on pinode, with optional read-only UniFi Site Manager fleet enrichment. The connector uses the local official Integration API as the authority for detailed state and every write. Site Manager stable-v1 reads add fleet host/site/device inventory, firmware/update state, and historical ISP metrics. Narrowly projected, opt-in private local reads remain available for documentation fields and System Log events unavailable from the official schema. The local data plane uses the active UniFi OS Server through the Tailscale HTTPS name:
 
 `https://unifi.nutria-newton.ts.net/proxy/network/integration`
 
@@ -8,20 +8,23 @@ It does not use the stopped `/srv/unifi` Docker rollback stack, controller datab
 
 ## Security model
 
-- Authentication is an official Network Integration API key sent only as `X-API-Key`.
+- Local authentication is an official Network Integration API key sent only to the configured local HTTPS endpoint as `X-API-Key`. Optional Site Manager authentication uses a separate read-only API key sent only to `https://api.ui.com`.
 - The API key stays in a 1Password Environment exposed through a locally mounted `.env` file. 1Password supplies the contents on demand without storing the plaintext values on disk.
 - The connector parses the mounted file itself when launched with `--env-file`. It imports only its supported `UNIFI_*` variables, does not execute the file as shell code, and does not override variables explicitly inherited from the parent process.
 - This does not store the API key in the repository or Codex configuration. The connector never reads macOS Keychain directly.
 - HTTPS uses macOS/.NET system trust plus hostname validation for `unifi.nutria-newton.ts.net`. There is no certificate-validation override and no direct-IP fallback.
 - Every normal API operation must exist in the loaded OpenAPI contract. Optional private access is separately constrained to GET `stat/device`, GET `v2/api/site/{site}/clients/active?includeTrafficUsage=true&includeUnifiDevices=true`, and an empty-body query-style POST to `v2/api/site/{site}/system-log/all`. The POST is a read operation used by Network 10.4.57 and accepts no caller-supplied body; arbitrary private URLs, methods, and writes are rejected.
+- Site Manager permits only stable `/v1` host, site, device, and ISP-metric reads. Early Access, SD-WAN, Cloud Connector proxying, arbitrary URLs, and Site Manager writes are rejected.
 - Responses, exceptions, snapshots, and previews are recursively redacted. Wi-Fi credentials, API keys, tokens, passwords, pre-shared keys, and hotspot voucher codes are never returned.
 - Read operations retry 429, transient HTTP failures, and timeouts, including the fixed query-style System Logs POST. Mutations are sent exactly once and are never automatically retried.
+- Site Manager requests share a process-local rolling ceiling of 9,000 requests per 60 seconds, a bounded queue, and four concurrent request slots. Discovery pages use the provider maximum of 500 records and are cached/coalesced for five minutes. A `429` honors delta-seconds or HTTP-date `Retry-After` without a premature retry; waits beyond five minutes return structured `rateLimited` metadata.
 
 ## Prerequisites
 
 - .NET SDK 10.0.302 or a compatible 10.0 patch release
 - 1Password for Mac with an Environment and local `.env` destination
 - A UniFi Network Integration API key created in **Network > Settings > Control Plane > Integrations**
+- Optional: a read-only Site Manager stable-v1 API key created at **unifi.ui.com > Settings > API Keys**
 - Tailscale access to `unifi.nutria-newton.ts.net`
 
 ## Configure 1Password
@@ -32,9 +35,11 @@ In 1Password, create an Environment for the connector and add these variables:
 UNIFI_API_KEY=<Network Integration API key>
 UNIFI_BASE_URL=https://unifi.nutria-newton.ts.net/proxy/network/integration
 UNIFI_ENABLE_LEGACY_READ_ENRICHMENT=false
+UNIFI_SITE_API_KEY=<optional Site Manager API key>
+UNIFI_SITE_MANAGER_LOCAL_HOST_ID=<optional explicit host ID>
 ```
 
-The optional variables are `UNIFI_DEFAULT_SITE_ID` and `UNIFI_TIMEOUT_SECONDS`. The tracked `.env.example` records the supported names only and must never contain resolved secrets.
+`UNIFI_SITE_API_KEY` enables fleet tools and ISP history. `UNIFI_SITE_MANAGER_LOCAL_HOST_ID` is required only to enrich this local controller's device responses; obtain the opaque ID with `unifi_site_manager` action `hosts`. No hostname or name-based heuristic is used. The other optional variables are `UNIFI_DEFAULT_SITE_ID` and `UNIFI_TIMEOUT_SECONDS`. The tracked `.env.example` records the supported names only and must never contain resolved secrets.
 
 From the Environment's **Destinations** tab, configure a local `.env` file at the persistent source checkout:
 
@@ -73,13 +78,13 @@ Run the live diagnostic without printing secrets:
   doctor
 ```
 
-`--env-file /absolute/path/.env` is also accepted. The diagnostic checks configuration, successful secret injection, normal TLS validation, `/v1/info`, contract selection, site discovery, private enrichment, and the fixed System Logs query.
+`--env-file /absolute/path/.env` is also accepted. The diagnostic checks configuration, successful secret injection, normal TLS validation, `/v1/info`, contract selection, site discovery, private enrichment, the fixed System Logs query, and—when configured—read-only Site Manager fleet access.
 
 ## MCP tools
 
-The server exposes 27 tools:
+The server exposes 29 tools:
 
-- Discovery and snapshots: `unifi_get_capabilities`, `unifi_get_site_snapshot`
+- Discovery, snapshots, and fleet data: `unifi_get_capabilities`, `unifi_get_site_snapshot`, `unifi_site_manager`, `unifi_isp_metrics`
 - Grouped reads: `unifi_sites`, `unifi_devices`, `unifi_clients`, `unifi_alerts`, `unifi_networks`, `unifi_wifi`, `unifi_hotspot`, `unifi_firewall`, `unifi_acl`, `unifi_switching`, `unifi_dns`, `unifi_traffic_lists`, `unifi_supporting_resources`
 - Contract-defined read escape hatch: `unifi_read_operation`
 - Domain previews: `unifi_preview_device_change`, `unifi_preview_client_change`, `unifi_preview_network_change`, `unifi_preview_wifi_change`, `unifi_preview_hotspot_change`, `unifi_preview_firewall_change`, `unifi_preview_acl_change`, `unifi_preview_dns_change`, `unifi_preview_traffic_list_change`
@@ -87,6 +92,12 @@ The server exposes 27 tools:
 - Confirmed apply: `unifi_apply_change`
 
 Official read tools support the contract's offset, limit, and filter parameters. Page responses include `_connector.truncated`; when true, request another page. `unifi_alerts` accepts a local 1-50 limit over the first System Logs page and reports the controller's page and total counts. Set `includeRead=false` to retain only records whose direct controller status is `NEW`; no meaning is inferred for other status values. Read responses also include observation/source metadata when their response shape can carry it. Device-detail and client responses include `_connector.contract` and `_connector.knownLimitations` when response coverage needs explanation. A site is auto-selected only if exactly one exists or `UNIFI_DEFAULT_SITE_ID` is configured.
+
+`unifi_site_manager` actions are `hosts`, `host`, `sites`, and `devices`. List actions use `pageSize` from 1 to 500 and return an opaque `pagination.continuation`; pass it back as `nextToken` for the next call. `host` requires `hostId`; `devices` optionally filters by host. `unifi_isp_metrics` accepts interval `5m` or `1h`, duration `24h` for 5-minute metrics, duration `7d` or `30d` for hourly metrics, or explicit RFC3339 timestamps. Optional targeted queries accept an array of `{ hostId, siteId, beginTimestamp?, endTimestamp? }`.
+
+Fleet inventory is projected before tool output. Host account profiles, email addresses, permissions, locations, UI assets, and undocumented application internals are discarded. Host identity/health/version, documented site metadata/statistics, and documented device/firmware/update fields are retained and recursively redacted.
+
+When both `UNIFI_SITE_API_KEY` and `UNIFI_SITE_MANAGER_LOCAL_HOST_ID` are configured, local adopted-device reads add `_connector.siteManagerEnrichment`. Records are joined only by normalized MAC address and contain Site Manager cloud status, firmware/update state, note, and provider update time with explicit source/observation metadata. Local fields are never overwritten. Duplicate provider MACs are reported as ambiguous and are not joined; Site Manager failures never fail a successful local read.
 
 Client `type` and `uplinkDeviceId` values are preserved as controller-reported observation data. The connector does not reinterpret them as proof of a direct cable, switch port, or Wi-Fi radio association when a third-party bridge such as eero may be in the path. Client responses include `_connector.topologySemantics` so callers can distinguish reported data from physical-topology inference.
 
@@ -107,14 +118,14 @@ The MCP metadata marks reads and previews read-only. `unifi_apply_change` is mar
 
 ## OpenAPI contract
 
-The repository vendors Ubiquiti Network OpenAPI `10.3.58`, currently the latest published contract, with 41 GET and 32 write operations. At startup the connector reads `/v1/info` and probes controller-local contract locations. It uses a controller contract only when its version matches the live Network application; otherwise it remains restricted to the reviewed embedded contract. Capabilities, read-response metadata, snapshots, and `doctor` report a machine-readable contract status such as `embedded-fallback` alongside the version warning. When the application version is newer than Ubiquiti's latest published contract, `embedded-fallback` means the connector is intentionally using the newest reviewed contract available; it does not imply that a matching published download was missed.
+The repository vendors Ubiquiti Network OpenAPI `10.4.57`, matching the active Network application, with 41 GET and 32 write operations. At startup the connector reads `/v1/info` and probes controller-local contract locations. It uses a controller contract only when its version matches the live Network application; otherwise it remains restricted to the reviewed embedded contract. Capabilities, read-response metadata, snapshots, and `doctor` report the machine-readable contract status.
 
-The official `10.3.58` adopted-device schema does not expose custom switch-port labels or STP-related state and configuration fields. The connector reports these as limitations of the official response, with `source`, `scope`, `resolutionStatus`, `resolvedBy`, and `stillMissing` metadata. Successful legacy enrichment resolves labels and the projected STP-related fields separately under `_connector.legacyReadEnrichment`; the normalized UniFi UI Edge/Participant role remains explicitly unresolved.
+The official `10.4.57` adopted-device schema still does not expose custom switch-port labels or STP-related state and configuration fields. The connector detects these capabilities from response-schema paths instead of hard-coding a version. Missing fields are reported with `source`, `scope`, `resolutionStatus`, `resolvedBy`, and `stillMissing` metadata. Successful legacy enrichment resolves labels and the projected STP-related fields separately under `_connector.legacyReadEnrichment`; the normalized UniFi UI Edge/Participant role remains explicitly unresolved.
 
 Refresh is an explicit review step:
 
 ```sh
-./scripts/update-openapi.sh 10.3.58
+./scripts/update-openapi.sh 10.4.57
 dotnet test UnifiMcp.slnx
 git diff -- contracts/unifi-network.openapi.json
 ```

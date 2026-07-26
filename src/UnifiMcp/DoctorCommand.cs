@@ -6,6 +6,7 @@ using UnifiMcp.Api;
 using UnifiMcp.Configuration;
 using UnifiMcp.Contracts;
 using UnifiMcp.Security;
+using UnifiMcp.Tools;
 
 namespace UnifiMcp;
 
@@ -16,8 +17,18 @@ public static class DoctorCommand
         try
         {
             var configuration = UnifiConfiguration.Load();
-            var redactor = new SecretRedactor(configuration.ApiKey);
+            var redactor = new SecretRedactor(
+                configuration.ApiKey,
+                configuration.SiteManagerApiKey);
             using var client = new UnifiClient(configuration, NullLogger<UnifiClient>.Instance);
+            using var siteManagerClient = new SiteManagerClient(
+                configuration,
+                redactor,
+                NullLogger<SiteManagerClient>.Instance);
+            var siteManager = new SiteManagerReadService(
+                configuration,
+                siteManagerClient,
+                redactor);
             var embedded = OpenApiContract.LoadEmbedded();
             var provider = new ContractProvider(embedded, client, NullLogger<ContractProvider>.Instance);
             await provider.RefreshAsync(cancellationToken).ConfigureAwait(false);
@@ -46,6 +57,11 @@ public static class DoctorCommand
                 sites,
                 redactor,
                 cancellationToken).ConfigureAwait(false);
+            var siteManagerStatus = await ProbeSiteManagerAsync(
+                configuration,
+                siteManager,
+                redactor,
+                cancellationToken).ConfigureAwait(false);
 
             var result = new JsonObject
             {
@@ -60,6 +76,7 @@ public static class DoctorCommand
                 ["contractWarning"] = provider.LastProbeWarning,
                 ["legacyReadEnrichment"] = legacyReadEnrichment,
                 ["systemLogs"] = systemLogs,
+                ["siteManager"] = siteManagerStatus,
                 ["application"] = redactor.Redact(info),
                 ["siteCount"] = sites?["totalCount"]?.DeepClone()
                     ?? sites?["count"]?.DeepClone()
@@ -71,10 +88,114 @@ public static class DoctorCommand
         catch (Exception exception) when (exception is ConfigurationException or ContractException or UnifiApiException or HttpRequestException or TaskCanceledException)
         {
             var key = Environment.GetEnvironmentVariable("UNIFI_API_KEY");
-            Console.Error.WriteLine("UniFi MCP doctor failed: " + new SecretRedactor(key).Redact(exception.Message));
+            var siteKey = Environment.GetEnvironmentVariable("UNIFI_SITE_API_KEY");
+            Console.Error.WriteLine(
+                "UniFi MCP doctor failed: " +
+                new SecretRedactor(key, siteKey).Redact(exception.Message));
             return 1;
         }
     }
+
+    private static async Task<JsonObject> ProbeSiteManagerAsync(
+        UnifiConfiguration configuration,
+        SiteManagerReadService siteManager,
+        SecretRedactor redactor,
+        CancellationToken cancellationToken)
+    {
+        if (!configuration.SiteManagerConfigured)
+        {
+            return new JsonObject
+            {
+                ["configured"] = false,
+                ["status"] = "notConfigured",
+                ["readOnly"] = true
+            };
+        }
+
+        try
+        {
+            var hosts = await siteManager.ReadInventoryAsync(
+                "hosts",
+                null,
+                500,
+                null,
+                cancellationToken).ConfigureAwait(false);
+            var sites = await siteManager.ReadInventoryAsync(
+                "sites",
+                null,
+                500,
+                null,
+                cancellationToken).ConfigureAwait(false);
+            var devices = await siteManager.ReadInventoryAsync(
+                "devices",
+                configuration.SiteManagerLocalHostId,
+                500,
+                null,
+                cancellationToken).ConfigureAwait(false);
+            var now = DateTimeOffset.UtcNow;
+            var ispMetrics = await siteManager.ReadIspMetricsAsync(
+                "5m",
+                null,
+                now.AddMinutes(-5).ToString("O"),
+                now.ToString("O"),
+                null,
+                cancellationToken).ConfigureAwait(false);
+            var statuses = new[] { hosts, sites, devices, ispMetrics }
+                .Select(item => item.Data?["status"]?.GetValue<string>())
+                .ToArray();
+            return new JsonObject
+            {
+                ["configured"] = true,
+                ["status"] = statuses.All(status => string.Equals(status, "ok", StringComparison.Ordinal))
+                    ? "ok"
+                    : statuses.FirstOrDefault(status => !string.Equals(status, "ok", StringComparison.Ordinal)) ?? "failed",
+                ["readOnly"] = true,
+                ["apiVersion"] = "v1-stable",
+                ["localHostIdConfigured"] =
+                    !string.IsNullOrWhiteSpace(configuration.SiteManagerLocalHostId),
+                ["hostRecords"] = CountRecords(hosts.Data),
+                ["siteRecords"] = CountRecords(sites.Data),
+                ["deviceHostGroups"] = CountRecords(devices.Data),
+                ["ispMetricSeries"] = CountRecords(ispMetrics.Data),
+                ["ispMetricWindowMinutes"] = 5,
+                ["rateLimit"] = siteManager.Describe()["rateLimit"]?.DeepClone()
+            };
+        }
+        catch (TaskCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+            throw;
+        }
+        catch (Exception exception) when (
+            exception is SiteManagerApiException or
+            SiteManagerRateLimitQueueException or
+            ConfigurationException or
+            ContractException or
+            HttpRequestException or
+            TaskCanceledException or
+            InvalidOperationException)
+        {
+            var failed = new JsonObject
+            {
+                ["configured"] = true,
+                ["status"] = exception is SiteManagerApiException { IsRateLimited: true }
+                    ? "rateLimited"
+                    : "failed",
+                ["readOnly"] = true,
+                ["error"] = redactor.Redact(exception.Message)
+            };
+            if (exception is SiteManagerApiException apiException)
+            {
+                failed["httpStatus"] = (int)apiException.StatusCode;
+                failed["errorCode"] = apiException.Code;
+                failed["retryAt"] = apiException.RetryAt?.ToString("O");
+            }
+
+            return failed;
+        }
+    }
+
+    private static int CountRecords(JsonNode? response) =>
+        (response?["data"] as JsonArray)?.Count ?? 0;
 
     private static async Task<JsonObject> ProbeLegacyReadEnrichmentAsync(
         UnifiConfiguration configuration,

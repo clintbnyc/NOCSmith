@@ -1,0 +1,330 @@
+using System.Net;
+using System.Net.Http.Headers;
+using System.Text;
+using System.Text.Json.Nodes;
+using Microsoft.Extensions.Logging.Abstractions;
+using UnifiMcp.Api;
+using UnifiMcp.Configuration;
+using UnifiMcp.Security;
+
+namespace UnifiMcp.Tests;
+
+public sealed class SiteManagerClientTests
+{
+    private static readonly DateTimeOffset Now =
+        new(2026, 7, 25, 12, 0, 0, TimeSpan.Zero);
+
+    [Fact]
+    public async Task Get_uses_fixed_stable_base_and_site_manager_key()
+    {
+        var handler = new RecordingHandler(_ =>
+            JsonResponse(HttpStatusCode.OK, "{\"data\":[]}"));
+        using var client = CreateClient(handler);
+
+        await client.GetAsync("v1/hosts?pageSize=500", CancellationToken.None);
+
+        var request = Assert.Single(handler.Requests);
+        Assert.Equal("GET", request.Method);
+        Assert.Equal("https://api.ui.com/v1/hosts?pageSize=500", request.Uri);
+        Assert.Equal("site-manager-key", request.ApiKey);
+        Assert.Null(request.Body);
+    }
+
+    [Theory]
+    [InlineData("ea/hosts")]
+    [InlineData("v1/connector/consoles/id/network/integration/v1/sites")]
+    [InlineData("v1/sd-wan-configs")]
+    [InlineData("https://example.invalid/v1/hosts")]
+    public async Task Get_rejects_excluded_or_external_surfaces(string path)
+    {
+        var handler = new RecordingHandler(_ =>
+            JsonResponse(HttpStatusCode.OK, "{}"));
+        using var client = CreateClient(handler);
+
+        await Assert.ThrowsAsync<ArgumentException>(() =>
+            client.GetAsync(path, CancellationToken.None));
+
+        Assert.Empty(handler.Requests);
+    }
+
+    [Fact]
+    public async Task Rate_limit_honors_delta_retry_after()
+    {
+        var attempts = 0;
+        var delays = new List<TimeSpan>();
+        var handler = new RecordingHandler(_ =>
+        {
+            attempts++;
+            if (attempts == 1)
+            {
+                var response = JsonResponse(HttpStatusCode.TooManyRequests, "{\"code\":\"rate_limit\"}");
+                response.Headers.RetryAfter = new RetryConditionHeaderValue(TimeSpan.FromSeconds(7));
+                return response;
+            }
+
+            return JsonResponse(HttpStatusCode.OK, "{\"data\":[]}");
+        });
+        using var client = CreateClient(
+            handler,
+            delay: (value, _) =>
+            {
+                delays.Add(value);
+                return Task.CompletedTask;
+            });
+
+        await client.GetAsync("v1/hosts", CancellationToken.None);
+
+        Assert.Equal(2, attempts);
+        Assert.Equal(TimeSpan.FromSeconds(7), Assert.Single(delays));
+    }
+
+    [Fact]
+    public async Task Rate_limit_honors_http_date_retry_after()
+    {
+        var attempts = 0;
+        var delays = new List<TimeSpan>();
+        var handler = new RecordingHandler(_ =>
+        {
+            attempts++;
+            if (attempts == 1)
+            {
+                var response = JsonResponse(HttpStatusCode.TooManyRequests, "{}");
+                response.Headers.RetryAfter = new RetryConditionHeaderValue(Now.AddSeconds(11));
+                return response;
+            }
+
+            return JsonResponse(HttpStatusCode.OK, "{}");
+        });
+        using var client = CreateClient(
+            handler,
+            delay: (value, _) =>
+            {
+                delays.Add(value);
+                return Task.CompletedTask;
+            });
+
+        await client.GetAsync("v1/sites", CancellationToken.None);
+
+        Assert.Equal(TimeSpan.FromSeconds(11), Assert.Single(delays));
+    }
+
+    [Fact]
+    public async Task Long_retry_after_returns_retry_at_without_an_early_retry()
+    {
+        var retryAt = Now.AddMinutes(6);
+        var delays = new List<TimeSpan>();
+        var handler = new RecordingHandler(_ =>
+        {
+            var response = JsonResponse(HttpStatusCode.TooManyRequests, "{}");
+            response.Headers.RetryAfter = new RetryConditionHeaderValue(retryAt);
+            return response;
+        });
+        using var client = CreateClient(
+            handler,
+            delay: (value, _) =>
+            {
+                delays.Add(value);
+                return Task.CompletedTask;
+            });
+
+        var exception = await Assert.ThrowsAsync<SiteManagerApiException>(() =>
+            client.GetAsync("v1/devices", CancellationToken.None));
+
+        Assert.True(exception.IsRateLimited);
+        Assert.Equal(retryAt, exception.RetryAt);
+        Assert.Single(handler.Requests);
+        Assert.Empty(delays);
+    }
+
+    [Fact]
+    public async Task Missing_retry_after_uses_bounded_backoff_and_exhausts_after_three_attempts()
+    {
+        var delays = new List<TimeSpan>();
+        var handler = new RecordingHandler(_ =>
+            JsonResponse(HttpStatusCode.TooManyRequests, "{}"));
+        using var client = CreateClient(
+            handler,
+            delay: (value, _) =>
+            {
+                delays.Add(value);
+                return Task.CompletedTask;
+            },
+            backoff: attempt => TimeSpan.FromMilliseconds(attempt * 100));
+
+        await Assert.ThrowsAsync<SiteManagerApiException>(() =>
+            client.GetAsync("v1/hosts", CancellationToken.None));
+
+        Assert.Equal(3, handler.Requests.Count);
+        Assert.Equal(
+            new[] { TimeSpan.FromMilliseconds(100), TimeSpan.FromMilliseconds(200) },
+            delays);
+    }
+
+    [Fact]
+    public async Task Malformed_retry_after_uses_backoff_instead_of_retrying_immediately()
+    {
+        var attempts = 0;
+        var delays = new List<TimeSpan>();
+        var handler = new RecordingHandler(_ =>
+        {
+            attempts++;
+            if (attempts == 1)
+            {
+                var response = JsonResponse(HttpStatusCode.TooManyRequests, "{}");
+                response.Headers.TryAddWithoutValidation("Retry-After", "not-a-valid-delay");
+                return response;
+            }
+
+            return JsonResponse(HttpStatusCode.OK, "{}");
+        });
+        using var client = CreateClient(
+            handler,
+            delay: (value, _) =>
+            {
+                delays.Add(value);
+                return Task.CompletedTask;
+            },
+            backoff: _ => TimeSpan.FromMilliseconds(250));
+
+        await client.GetAsync("v1/hosts", CancellationToken.None);
+
+        Assert.Equal(TimeSpan.FromMilliseconds(250), Assert.Single(delays));
+    }
+
+    [Fact]
+    public async Task Cancellation_interrupts_retry_wait()
+    {
+        var handler = new RecordingHandler(_ =>
+        {
+            var response = JsonResponse(HttpStatusCode.TooManyRequests, "{}");
+            response.Headers.RetryAfter = new RetryConditionHeaderValue(TimeSpan.FromMinutes(1));
+            return response;
+        });
+        using var client = CreateClient(
+            handler,
+            delay: (_, cancellationToken) =>
+                Task.Delay(Timeout.InfiniteTimeSpan, cancellationToken));
+        using var cancellation = new CancellationTokenSource();
+        var request = client.GetAsync("v1/hosts", cancellation.Token);
+
+        cancellation.Cancel();
+
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(() => request);
+        Assert.Single(handler.Requests);
+    }
+
+    [Fact]
+    public async Task Retries_5xx_and_read_only_isp_query_post()
+    {
+        var attempts = 0;
+        var handler = new RecordingHandler(_ =>
+        {
+            attempts++;
+            return attempts == 1
+                ? JsonResponse(HttpStatusCode.InternalServerError, "{}")
+                : JsonResponse(HttpStatusCode.OK, "{\"data\":{\"metrics\":[]}}");
+        });
+        using var client = CreateClient(
+            handler,
+            delay: (_, _) => Task.CompletedTask,
+            backoff: _ => TimeSpan.Zero);
+
+        await client.QueryIspMetricsAsync(
+            "5m",
+            new JsonObject { ["sites"] = new JsonArray() },
+            CancellationToken.None);
+
+        Assert.Equal(2, handler.Requests.Count);
+        Assert.All(handler.Requests, request =>
+        {
+            Assert.Equal("POST", request.Method);
+            Assert.Equal("https://api.ui.com/v1/isp-metrics/5m/query", request.Uri);
+            Assert.Contains("\"sites\"", request.Body, StringComparison.Ordinal);
+        });
+    }
+
+    [Fact]
+    public async Task Authentication_error_redacts_both_api_keys()
+    {
+        var handler = new RecordingHandler(_ =>
+            JsonResponse(
+                HttpStatusCode.BadRequest,
+                "{\"message\":\"local-key site-manager-key\",\"apiKey\":\"site-manager-key\"}"));
+        using var client = CreateClient(handler);
+
+        var exception = await Assert.ThrowsAsync<SiteManagerApiException>(() =>
+            client.GetAsync("v1/hosts", CancellationToken.None));
+
+        Assert.DoesNotContain("local-key", exception.Message, StringComparison.Ordinal);
+        Assert.DoesNotContain("site-manager-key", exception.Message, StringComparison.Ordinal);
+        Assert.Contains("<redacted>", exception.Message, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task Missing_key_fails_without_sending_a_request()
+    {
+        var handler = new RecordingHandler(_ =>
+            JsonResponse(HttpStatusCode.OK, "{}"));
+        using var client = CreateClient(handler, siteManagerKey: null);
+
+        await Assert.ThrowsAsync<ConfigurationException>(() =>
+            client.GetAsync("v1/hosts", CancellationToken.None));
+
+        Assert.Empty(handler.Requests);
+    }
+
+    private static SiteManagerClient CreateClient(
+        HttpMessageHandler handler,
+        string? siteManagerKey = "site-manager-key",
+        Func<TimeSpan, CancellationToken, Task>? delay = null,
+        Func<int, TimeSpan>? backoff = null) =>
+        new(
+            new UnifiConfiguration(
+                new Uri(UnifiConfiguration.DefaultBaseUrl + "/"),
+                "local-key",
+                null,
+                TimeSpan.FromSeconds(5),
+                SiteManagerApiKey: siteManagerKey),
+            new SecretRedactor("local-key", siteManagerKey),
+            NullLogger<SiteManagerClient>.Instance,
+            handler,
+            new SiteManagerRateLimiter(),
+            () => Now,
+            delay,
+            backoff);
+
+    private static HttpResponseMessage JsonResponse(HttpStatusCode status, string body) =>
+        new(status) { Content = new StringContent(body, Encoding.UTF8, "application/json") };
+
+    private sealed class RecordingHandler : HttpMessageHandler
+    {
+        private readonly Func<HttpRequestMessage, HttpResponseMessage> _response;
+
+        public RecordingHandler(Func<HttpRequestMessage, HttpResponseMessage> response)
+        {
+            _response = response;
+        }
+
+        public List<RecordedRequest> Requests { get; } = new();
+
+        protected override async Task<HttpResponseMessage> SendAsync(
+            HttpRequestMessage request,
+            CancellationToken cancellationToken)
+        {
+            Requests.Add(new RecordedRequest(
+                request.Method.Method,
+                request.RequestUri!.ToString(),
+                request.Headers.GetValues("X-API-Key").Single(),
+                request.Content is null
+                    ? null
+                    : await request.Content.ReadAsStringAsync(cancellationToken).ConfigureAwait(false)));
+            return _response(request);
+        }
+    }
+
+    private sealed record RecordedRequest(
+        string Method,
+        string Uri,
+        string ApiKey,
+        string? Body);
+}
