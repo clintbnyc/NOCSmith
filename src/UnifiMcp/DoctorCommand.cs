@@ -147,19 +147,34 @@ public static class DoctorCommand
                 now.ToString("O"),
                 null,
                 cancellationToken).ConfigureAwait(false);
+            var hostMapping = await siteManager.GetHostMappingStatusAsync(cancellationToken)
+                .ConfigureAwait(false);
             var statuses = new[] { hosts, sites, devices, ispMetrics }
                 .Select(item => item.Data?["status"]?.GetValue<string>())
                 .ToArray();
+            var coreReadsHealthy = statuses.All(status =>
+                string.Equals(status, "ok", StringComparison.Ordinal));
+            var hostMappingRequired =
+                !string.IsNullOrWhiteSpace(configuration.SiteManagerLocalHostId);
+            var hostMappingHealthy = !hostMappingRequired ||
+                string.Equals(
+                    hostMapping["status"]?.GetValue<string>(),
+                    "mapped",
+                    StringComparison.Ordinal);
             return new JsonObject
             {
                 ["configured"] = true,
-                ["status"] = statuses.All(status => string.Equals(status, "ok", StringComparison.Ordinal))
+                ["status"] = coreReadsHealthy && hostMappingHealthy
                     ? "ok"
-                    : statuses.FirstOrDefault(status => !string.Equals(status, "ok", StringComparison.Ordinal)) ?? "failed",
+                    : !coreReadsHealthy
+                        ? statuses.FirstOrDefault(status =>
+                            !string.Equals(status, "ok", StringComparison.Ordinal)) ?? "failed"
+                        : "degraded",
                 ["readOnly"] = true,
                 ["apiVersion"] = "v1-stable",
                 ["localHostIdConfigured"] =
                     !string.IsNullOrWhiteSpace(configuration.SiteManagerLocalHostId),
+                ["hostMapping"] = hostMapping,
                 ["hostRecords"] = CountRecords(hosts.Data),
                 ["siteRecords"] = CountRecords(sites.Data),
                 ["deviceHostGroups"] = CountRecords(devices.Data),

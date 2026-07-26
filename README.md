@@ -17,7 +17,7 @@ It does not use the stopped `/srv/unifi` Docker rollback stack, controller datab
 - Site Manager permits only stable `/v1` host, site, device, and ISP-metric reads. Early Access, SD-WAN, Cloud Connector proxying, arbitrary URLs, and Site Manager writes are rejected.
 - Responses, exceptions, snapshots, and previews are recursively redacted. Wi-Fi credentials, API keys, tokens, passwords, pre-shared keys, and hotspot voucher codes are never returned.
 - Read operations retry 429, transient HTTP failures, and timeouts, including the fixed query-style System Logs POST. Mutations are sent exactly once and are never automatically retried.
-- Site Manager requests share a process-local rolling ceiling of 9,000 requests per 60 seconds, a bounded queue, and four concurrent request slots. Discovery pages use the provider maximum of 500 records and are cached/coalesced for five minutes. A `429` honors delta-seconds or HTTP-date `Retry-After` without a premature retry; waits beyond five minutes return structured `rateLimited` metadata.
+- Site Manager requests share a process-local rolling ceiling of 9,000 requests per 60 seconds, 100-request rate-limit and concurrency queues, and four concurrent request slots. Discovery pages use the provider maximum of 500 records and are cached/coalesced for five minutes. A `429` establishes a process-wide cooldown from delta-seconds or HTTP-date `Retry-After`, so no newly dispatched request bypasses the provider wait. Waits beyond five minutes return structured `rateLimited` metadata.
 
 ## Prerequisites
 
@@ -39,7 +39,7 @@ UNIFI_SITE_API_KEY=<optional Site Manager API key>
 UNIFI_SITE_MANAGER_LOCAL_HOST_ID=<optional explicit host ID>
 ```
 
-`UNIFI_SITE_API_KEY` enables fleet tools and ISP history. `UNIFI_SITE_MANAGER_LOCAL_HOST_ID` is required only to enrich this local controller's device responses; obtain the opaque ID with `unifi_site_manager` action `hosts`. No hostname or name-based heuristic is used. The other optional variables are `UNIFI_DEFAULT_SITE_ID` and `UNIFI_TIMEOUT_SECONDS`. The tracked `.env.example` records the supported names only and must never contain resolved secrets.
+`UNIFI_SITE_API_KEY` enables fleet tools and ISP history. `UNIFI_SITE_MANAGER_LOCAL_HOST_ID` is required only to enrich this local controller's device responses; obtain the opaque ID with `unifi_site_manager` action `hosts`. No hostname or name-based heuristic is used. Capabilities and doctor verify the configured ID against paginated Site Manager hosts and report `mapped`, `notFound`, or `notConfigured` without returning the ID. The other optional variables are `UNIFI_DEFAULT_SITE_ID` and `UNIFI_TIMEOUT_SECONDS`. The tracked `.env.example` records the supported names only and must never contain resolved secrets.
 
 From the Environment's **Destinations** tab, configure a local `.env` file at the persistent source checkout:
 
@@ -90,7 +90,7 @@ Run the live diagnostic without printing secrets:
   doctor
 ```
 
-`--env-file /absolute/path/.env` is also accepted. The diagnostic checks configuration, successful secret injection, normal TLS validation, `/v1/info`, contract selection, site discovery, private enrichment, the fixed client-group audit, the fixed System Logs query, and—when configured—read-only Site Manager fleet access.
+`--env-file /absolute/path/.env` is also accepted. The diagnostic checks configuration, successful secret injection, normal TLS validation, `/v1/info`, contract selection, site discovery, private enrichment, the fixed client-group audit, the fixed System Logs query, and—when configured—read-only Site Manager fleet access plus explicit local-host mapping. A configured host ID that is not visible to the Site Manager account makes Site Manager doctor status `degraded`.
 
 ## MCP tools
 

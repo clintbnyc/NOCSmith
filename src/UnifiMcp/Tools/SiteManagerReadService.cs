@@ -14,6 +14,7 @@ public sealed class SiteManagerReadService
     private const int MaximumPageSize = 500;
     private const int MaximumTargetCount = 500;
     private const int MaximumPagesForEnrichment = 100;
+    private const int MaximumPagesForHostMapping = 100;
     private const int MaximumOpaqueIdLength = 4096;
     private static readonly TimeSpan CacheDuration = TimeSpan.FromMinutes(5);
 
@@ -175,6 +176,108 @@ public sealed class SiteManagerReadService
             $"Site Manager device enrichment exceeded {MaximumPagesForEnrichment} pages.");
     }
 
+    public async Task<JsonObject> GetHostMappingStatusAsync(CancellationToken cancellationToken)
+    {
+        if (!_configuration.SiteManagerConfigured)
+        {
+            return new JsonObject
+            {
+                ["status"] = "siteManagerNotConfigured",
+                ["configured"] = false,
+                ["verified"] = true
+            };
+        }
+
+        if (string.IsNullOrWhiteSpace(_configuration.SiteManagerLocalHostId))
+        {
+            return new JsonObject
+            {
+                ["status"] = "notConfigured",
+                ["configured"] = false,
+                ["verified"] = true
+            };
+        }
+
+        try
+        {
+            string? nextToken = null;
+            for (var page = 0; page < MaximumPagesForHostMapping; page++)
+            {
+                var path = BuildPagePath("v1/hosts", DefaultPageSize, nextToken, null);
+                var response = await GetCachedAsync(
+                    path,
+                    () => _client.GetAsync(path, CancellationToken.None),
+                    cancellationToken).ConfigureAwait(false);
+                if (response?["data"] is not JsonArray hosts)
+                {
+                    throw new ContractException("Site Manager hosts response did not contain a data array.");
+                }
+
+                if (hosts
+                    .OfType<JsonObject>()
+                    .Any(host => string.Equals(
+                        host["id"]?.GetValue<string>(),
+                        _configuration.SiteManagerLocalHostId,
+                        StringComparison.Ordinal)))
+                {
+                    return new JsonObject
+                    {
+                        ["status"] = "mapped",
+                        ["configured"] = true,
+                        ["verified"] = true,
+                        ["source"] = "site-manager-v1"
+                    };
+                }
+
+                nextToken = ReadContinuation(response);
+                if (nextToken is null)
+                {
+                    return new JsonObject
+                    {
+                        ["status"] = "notFound",
+                        ["configured"] = true,
+                        ["verified"] = true,
+                        ["source"] = "site-manager-v1"
+                    };
+                }
+            }
+
+            throw new ContractException(
+                $"Site Manager host-mapping verification exceeded {MaximumPagesForHostMapping} pages.");
+        }
+        catch (TaskCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+            throw;
+        }
+        catch (Exception exception) when (
+            exception is SiteManagerApiException or
+            SiteManagerRateLimitQueueException or
+            ConfigurationException or
+            ContractException or
+            HttpRequestException or
+            TaskCanceledException or
+            InvalidOperationException)
+        {
+            var failed = new JsonObject
+            {
+                ["status"] = exception is SiteManagerApiException { IsRateLimited: true }
+                    ? "rateLimited"
+                    : "failed",
+                ["configured"] = true,
+                ["verified"] = false,
+                ["error"] = _redactor.Redact(exception.Message)
+            };
+            if (exception is SiteManagerApiException apiException)
+            {
+                failed["httpStatus"] = (int)apiException.StatusCode;
+                failed["errorCode"] = apiException.Code;
+                failed["retryAt"] = apiException.RetryAt?.ToString("O", CultureInfo.InvariantCulture);
+            }
+
+            return failed;
+        }
+    }
+
     public JsonObject Describe()
     {
         var description = _client.Describe();
@@ -183,6 +286,14 @@ public sealed class SiteManagerReadService
         description["localHostId"] = string.IsNullOrWhiteSpace(_configuration.SiteManagerLocalHostId)
             ? null
             : "<configured>";
+        description["hostMapping"] = new JsonObject
+        {
+            ["status"] = string.IsNullOrWhiteSpace(_configuration.SiteManagerLocalHostId)
+                ? "notConfigured"
+                : "configuredUnverified",
+            ["configured"] = !string.IsNullOrWhiteSpace(_configuration.SiteManagerLocalHostId),
+            ["verified"] = false
+        };
         description["cacheSeconds"] = CacheDuration.TotalSeconds;
         description["pageSize"] = DefaultPageSize;
         description["maximumPageSize"] = MaximumPageSize;
@@ -240,19 +351,15 @@ public sealed class SiteManagerReadService
                     return value;
                 },
                 LazyThreadSafetyMode.ExecutionAndPublication));
-        try
-        {
-            var value = await lazy.Value.WaitAsync(cancellationToken).ConfigureAwait(false);
-            return value?.DeepClone();
-        }
-        finally
-        {
-            if (lazy.IsValueCreated && lazy.Value.IsCompleted)
-            {
-                _inflight.TryRemove(
-                    new KeyValuePair<string, Lazy<Task<JsonNode?>>>(key, lazy));
-            }
-        }
+        var task = lazy.Value;
+        _ = task.ContinueWith(
+            _ => _inflight.TryRemove(
+                new KeyValuePair<string, Lazy<Task<JsonNode?>>>(key, lazy)),
+            CancellationToken.None,
+            TaskContinuationOptions.ExecuteSynchronously,
+            TaskScheduler.Default);
+        var value = await task.WaitAsync(cancellationToken).ConfigureAwait(false);
+        return value?.DeepClone();
     }
 
     private ToolResponse CreateInventoryResponse(
@@ -681,16 +788,31 @@ public sealed class SiteManagerReadService
 
     private static string RequiredOpaqueProperty(JsonObject target, string name)
     {
-        var value = target[name]?.GetValue<string>();
+        var value = ReadOptionalString(target, name);
         ValidateOpaqueValue(value, name, allowNull: false);
         return value!;
     }
 
     private static string? ReadOptionalTimestamp(JsonObject target, string name)
     {
-        var value = target[name]?.GetValue<string>();
+        var value = ReadOptionalString(target, name);
         ValidateTimestamp(value, name);
         return value;
+    }
+
+    private static string? ReadOptionalString(JsonObject target, string name)
+    {
+        if (!target.TryGetPropertyValue(name, out var node) || node is null)
+        {
+            return null;
+        }
+
+        if (node is not JsonValue value || !value.TryGetValue<string>(out var text))
+        {
+            throw new ContractException($"{name} must be a string.");
+        }
+
+        return text;
     }
 
     private static void ValidateOpaqueValue(string? value, string name, bool allowNull)
