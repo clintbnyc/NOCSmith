@@ -87,6 +87,16 @@ public sealed class UnifiClient : IUnifiClient, IDisposable
             null,
             cancellationToken);
 
+    public Task<JsonNode?> ReadClientHistoryAsync(
+        string internalSiteReference,
+        int withinHours,
+        CancellationToken cancellationToken) =>
+        SendWithReadRetriesAsync(
+            HttpMethod.Get,
+            BuildClientHistoryReadPath(internalSiteReference, withinHours),
+            null,
+            cancellationToken);
+
     public Task<JsonNode?> ReadNetworkMembersGroupsAsync(string internalSiteReference, CancellationToken cancellationToken) =>
         SendWithReadRetriesAsync(
             HttpMethod.Get,
@@ -277,6 +287,19 @@ public sealed class UnifiClient : IUnifiClient, IDisposable
     {
         var encodedSiteReference = EncodeInternalSiteReference(internalSiteReference);
         return $"../v2/api/site/{encodedSiteReference}/clients/active?includeTrafficUsage=true&includeUnifiDevices=true";
+    }
+
+    private static string BuildClientHistoryReadPath(string internalSiteReference, int withinHours)
+    {
+        if (withinHours is not (24 or 72 or 168 or 336 or 720 or 4320))
+        {
+            throw new ArgumentOutOfRangeException(
+                nameof(withinHours),
+                "Client history window must match a bounded Network UI value.");
+        }
+
+        var encodedSiteReference = EncodeInternalSiteReference(internalSiteReference);
+        return $"../v2/api/site/{encodedSiteReference}/clients/history?onlyNonBlocked=true&includeUnifiDevices=true&withinHours={withinHours}";
     }
 
     private static string BuildNetworkMembersGroupsReadPath(string internalSiteReference)

@@ -57,6 +57,12 @@ public static class DoctorCommand
                 provider,
                 redactor,
                 cancellationToken).ConfigureAwait(false);
+            var clientHistory = await ProbeClientHistoryAsync(
+                configuration,
+                client,
+                provider,
+                redactor,
+                cancellationToken).ConfigureAwait(false);
             var systemLogs = await ProbeSystemLogsAsync(
                 configuration,
                 client,
@@ -82,6 +88,7 @@ public static class DoctorCommand
                 ["contractWarning"] = provider.LastProbeWarning,
                 ["legacyReadEnrichment"] = legacyReadEnrichment,
                 ["clientGroups"] = clientGroups,
+                ["clientHistory"] = clientHistory,
                 ["systemLogs"] = systemLogs,
                 ["siteManager"] = siteManagerStatus,
                 ["application"] = redactor.Redact(info),
@@ -274,6 +281,76 @@ public static class DoctorCommand
 
     internal static int CountPrivateClientRecords(JsonNode? response) =>
         PrivateReadResponseParser.ReadRecords(response).Count;
+
+    private static async Task<JsonObject> ProbeClientHistoryAsync(
+        UnifiConfiguration configuration,
+        UnifiClient client,
+        ContractProvider contracts,
+        SecretRedactor redactor,
+        CancellationToken cancellationToken)
+    {
+        if (!configuration.EnableLegacyReadEnrichment)
+        {
+            return new JsonObject { ["enabled"] = false, ["status"] = "disabled" };
+        }
+
+        try
+        {
+            var siteResolver = new SiteResolver(configuration, contracts, client);
+            var service = new ClientHistoryReadService(
+                configuration,
+                client,
+                contracts,
+                siteResolver,
+                redactor);
+            var response = await service
+                .ReadAsync(
+                    configuration.DefaultSiteId,
+                    requestedHistoryHours: 24,
+                    requestedOffset: 0,
+                    requestedLimit: 200,
+                    cancellationToken: cancellationToken)
+                .ConfigureAwait(false);
+            var data = response.Data as JsonObject
+                ?? throw new ContractException("Client-history probe did not return an object.");
+            var metadata = data["_connector"] as JsonObject
+                ?? throw new ContractException("Client-history probe did not return connector metadata.");
+            return new JsonObject
+            {
+                ["enabled"] = true,
+                ["status"] = metadata["status"]?.DeepClone() ?? JsonValue.Create("failed"),
+                ["readOnly"] = true,
+                ["historyHours"] = data["historyWindow"]?["effectiveHours"]?.DeepClone(),
+                ["onlineRecords"] = data["counts"]?["online"]?.DeepClone(),
+                ["offlineRecordsWithinWindow"] = data["counts"]?["offlineWithinWindow"]?.DeepClone(),
+                ["groupMembersWithoutHistoryRecords"] =
+                    data["counts"]?["groupMembersWithoutHistory"]?.DeepClone(),
+                ["source"] = "private-v2-client-history-api",
+                ["rawResponsesReturned"] = false,
+                ["reasonCode"] = metadata["reasonCode"]?.DeepClone(),
+                ["reason"] = metadata["reason"]?.DeepClone()
+            };
+        }
+        catch (TaskCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+            throw;
+        }
+        catch (Exception exception) when (
+            exception is UnifiApiException or
+            ContractException or
+            HttpRequestException or
+            TaskCanceledException or
+            InvalidOperationException)
+        {
+            return new JsonObject
+            {
+                ["enabled"] = true,
+                ["status"] = "failed",
+                ["readOnly"] = true,
+                ["error"] = redactor.Redact(exception.Message)
+            };
+        }
+    }
 
     private static async Task<JsonObject> ProbeClientGroupsAsync(
         UnifiConfiguration configuration,

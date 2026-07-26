@@ -42,6 +42,12 @@ public sealed class ContractProviderTests
         public Task<JsonNode?> ReadPrivateClientsAsync(string internalSiteReference, CancellationToken cancellationToken) =>
             throw new NotSupportedException();
 
+        public Task<JsonNode?> ReadClientHistoryAsync(
+            string internalSiteReference,
+            int withinHours,
+            CancellationToken cancellationToken) =>
+            throw new NotSupportedException();
+
         public Task<JsonNode?> ReadNetworkMembersGroupsAsync(string internalSiteReference, CancellationToken cancellationToken) =>
             throw new NotSupportedException();
 

@@ -28,6 +28,7 @@ public static class UnifiTools
         SiteManagerReadService siteManager,
         SiteManagerDeviceEnrichmentService siteManagerEnrichment,
         ClientGroupReadService clientGroups,
+        ClientHistoryReadService clientHistory,
         SystemLogReadService systemLogs,
         [Description("Probe the live controller contract again before returning capabilities.")] bool refresh = false,
         CancellationToken cancellationToken = default) =>
@@ -68,6 +69,7 @@ public static class UnifiTools
                 ["siteManager"] = siteManagerDescription,
                 ["siteManagerDeviceEnrichment"] = siteManagerEnrichment.Describe(),
                 ["clientGroups"] = clientGroups.Describe(),
+                ["clientHistory"] = clientHistory.Describe(),
                 ["systemLogs"] = systemLogs.Describe(),
                 ["operations"] = operations
             };
@@ -143,9 +145,43 @@ public static class UnifiTools
         ReadDomain(domains, "devices", action, siteId, id, offset, limit, filter, cancellationToken);
 
     [McpServerTool(Name = "unifi_clients", Title = "Read UniFi clients", ReadOnly = true, Destructive = false, OpenWorld = false, UseStructuredContent = true)]
-    [Description("Read connected UniFi clients. Actions: list or get. Client type and uplink are controller-reported observation points; responses warn when third-party bridging prevents a reliable physical attachment inference. Opt-in legacy read enrichment projects client notes/comments.")]
-    public static Task<ToolResponse> Clients(DomainReadService domains, string action, string? siteId = null, string? id = null, int? offset = null, int? limit = null, string? filter = null, CancellationToken cancellationToken = default) =>
-        ReadDomain(domains, "clients", action, siteId, id, offset, limit, filter, cancellationToken);
+    [Description("Read UniFi clients. Actions: list and get retain official connected-client semantics. The opt-in history action separately classifies authoritative current clients, bounded non-blocked history records, and configured group-member MACs with no current or history record. History never alters the connected-client list.")]
+    public static Task<ToolResponse> Clients(
+        DomainReadService domains,
+        ClientHistoryReadService clientHistory,
+        [Description("Use list, get, or history.")] string action,
+        string? siteId = null,
+        [Description("Client UUID for get. Not accepted for history.")] string? id = null,
+        [Description("Page offset. For history, applied independently to each returned classification.")] int? offset = null,
+        [Description("Page limit. For history, 1-200 and applied independently to each classification.")] int? limit = null,
+        [Description("Official filter for list. Not accepted for history.")] string? filter = null,
+        [Description("For history only: 24, 72, 168, 336, 720, or 4320 hours. Defaults to 24.")] int? historyHours = null,
+        CancellationToken cancellationToken = default)
+    {
+        if (string.Equals(action, "history", StringComparison.OrdinalIgnoreCase))
+        {
+            if (!string.IsNullOrWhiteSpace(id) || !string.IsNullOrWhiteSpace(filter))
+            {
+                return Guard(() => Task.FromException<ToolResponse>(
+                    new ContractException("The history action does not accept id or filter.")));
+            }
+
+            return Guard(() => clientHistory.ReadAsync(
+                siteId,
+                historyHours,
+                offset,
+                limit,
+                cancellationToken));
+        }
+
+        if (historyHours is not null)
+        {
+            return Guard(() => Task.FromException<ToolResponse>(
+                new ContractException("historyHours is accepted only by the history action.")));
+        }
+
+        return ReadDomain(domains, "clients", action, siteId, id, offset, limit, filter, cancellationToken);
+    }
 
     [McpServerTool(Name = "unifi_client_groups", Title = "Read UniFi client groups", ReadOnly = true, Destructive = false, OpenWorld = false, UseStructuredContent = true)]
     [Description("Read UniFi Network client groups through one fixed private GET. Actions: list or audit. Audit joins configured group memberships to connected clients and identifies connected clients with no group assignment. No group writes are exposed.")]
