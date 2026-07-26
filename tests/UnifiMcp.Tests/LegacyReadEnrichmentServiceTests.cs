@@ -344,6 +344,9 @@ public sealed class LegacyReadEnrichmentServiceTests
                 : Task.FromResult(PrivateClients?.DeepClone());
         }
 
+        public Task<JsonNode?> ReadNetworkMembersGroupsAsync(string internalSiteReference, CancellationToken cancellationToken) =>
+            throw new NotSupportedException();
+
         public Task<JsonNode?> QuerySystemLogsAsync(string internalSiteReference, CancellationToken cancellationToken) =>
             throw new NotSupportedException();
     }

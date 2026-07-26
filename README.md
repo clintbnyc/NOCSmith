@@ -1,10 +1,10 @@
 # UniFi MCP Connector
 
-Private, stdio-only MCP access to UniFi Network on pinode, with optional read-only UniFi Site Manager fleet enrichment. The connector uses the local official Integration API as the authority for detailed state and every write. Site Manager stable-v1 reads add fleet host/site/device inventory, firmware/update state, and historical ISP metrics. Narrowly projected, opt-in private local reads remain available for documentation fields and System Log events unavailable from the official schema. The local data plane uses the active UniFi OS Server through the Tailscale HTTPS name:
+Private, stdio-only MCP access to UniFi Network on pinode, with optional read-only UniFi Site Manager fleet enrichment. The connector uses the local official Integration API as the authority for detailed state and every write. Site Manager stable-v1 reads add fleet host/site/device inventory, firmware/update state, and historical ISP metrics. Narrowly projected, opt-in private local reads remain available for documentation fields, client groups, and System Log events unavailable from the official schema. The local data plane uses the active UniFi OS Server through the Tailscale HTTPS name:
 
 `https://unifi.nutria-newton.ts.net/proxy/network/integration`
 
-It does not use the stopped `/srv/unifi` Docker rollback stack, controller database access, a public listener, or insecure TLS bypasses. Private access, when explicitly enabled, permits only one fixed legacy device GET, one fixed v2 active-client GET, and one fixed read-only System Logs query, and never returns their raw responses.
+It does not use the stopped `/srv/unifi` Docker rollback stack, controller database access, a public listener, or insecure TLS bypasses. Private access, when explicitly enabled, permits only one fixed legacy device GET, one fixed v2 active-client GET, one fixed v2 client-group GET, and one fixed read-only System Logs query, and never returns their raw responses.
 
 ## Security model
 
@@ -13,7 +13,7 @@ It does not use the stopped `/srv/unifi` Docker rollback stack, controller datab
 - The connector parses the mounted file itself when launched with `--env-file`. It imports only its supported `UNIFI_*` variables, does not execute the file as shell code, and does not override variables explicitly inherited from the parent process.
 - This does not store the API key in the repository or Codex configuration. The connector never reads macOS Keychain directly.
 - HTTPS uses macOS/.NET system trust plus hostname validation for `unifi.nutria-newton.ts.net`. There is no certificate-validation override and no direct-IP fallback.
-- Every normal API operation must exist in the loaded OpenAPI contract. Optional private access is separately constrained to GET `stat/device`, GET `v2/api/site/{site}/clients/active?includeTrafficUsage=true&includeUnifiDevices=true`, and an empty-body query-style POST to `v2/api/site/{site}/system-log/all`. The POST is a read operation used by Network 10.4.57 and accepts no caller-supplied body; arbitrary private URLs, methods, and writes are rejected.
+- Every normal API operation must exist in the loaded OpenAPI contract. Optional private access is separately constrained to GET `stat/device`, GET `v2/api/site/{site}/clients/active?includeTrafficUsage=true&includeUnifiDevices=true`, GET `v2/api/site/{site}/network-members-groups`, and an empty-body query-style POST to `v2/api/site/{site}/system-log/all`. The POST is a read operation used by Network 10.4.57 and accepts no caller-supplied body; arbitrary private URLs, methods, and writes are rejected.
 - Site Manager permits only stable `/v1` host, site, device, and ISP-metric reads. Early Access, SD-WAN, Cloud Connector proxying, arbitrary URLs, and Site Manager writes are rejected.
 - Responses, exceptions, snapshots, and previews are recursively redacted. Wi-Fi credentials, API keys, tokens, passwords, pre-shared keys, and hotspot voucher codes are never returned.
 - Read operations retry 429, transient HTTP failures, and timeouts, including the fixed query-style System Logs POST. Mutations are sent exactly once and are never automatically retried.
@@ -49,13 +49,25 @@ From the Environment's **Destinations** tab, configure a local `.env` file at th
 
 The path is ignored by Git. 1Password mounts it as an in-memory FIFO and prompts for authorization when the connector reads it. Do not leave the mounted file open in an editor because local Environment files are not designed for concurrent readers. There is intentionally no service-account or plaintext fallback.
 
-Set `UNIFI_ENABLE_LEGACY_READ_ENRICHMENT=true` only when port labels, STP-related state/configuration fields, device/client notes and comments, or System Log events are needed. The legacy-named variable is retained for configuration compatibility and gates all three private reads. The same `X-API-Key` is used; no administrator username/password session or browser cookie is introduced. The enrichment adapter reads devices from the fixed legacy `/proxy/network/api/s/{site}/stat/device` resource and clients from the fixed private `/proxy/network/v2/api/site/{site}/clients/active?includeTrafficUsage=true&includeUnifiDevices=true` resource, joins records by MAC address, and returns only:
+Set `UNIFI_ENABLE_LEGACY_READ_ENRICHMENT=true` only when port labels, STP-related state/configuration fields, device/client notes and comments, client-group membership, or System Log events are needed. The legacy-named variable is retained for configuration compatibility and gates all four private reads. The same `X-API-Key` is used; no administrator username/password session or browser cookie is introduced. The enrichment adapter reads devices from the fixed legacy `/proxy/network/api/s/{site}/stat/device` resource and clients from the fixed private `/proxy/network/v2/api/site/{site}/clients/active?includeTrafficUsage=true&includeUnifiDevices=true` resource, joins records by MAC address, and returns only:
 
 - device/client IDs and MAC addresses needed to identify projected records;
 - port index, custom label, controller-native STP-related state and configuration fields, uplink flag, and selected STP mode fields;
 - `note`, `notes`, `comment`, and `comments` free text.
 
 Raw private responses, VLAN/network identifiers, authentication material, device keys, traffic counters, and all other fields are discarded before tool output is built. Selected free text is passed through the connector's secret redactor, including inline password, token, API-key, PSK, and private-key patterns. Enrichment failures are reported under `_connector.legacyReadEnrichment` without failing the official read.
+
+`unifi_client_groups` separately sends a fixed GET to
+`/proxy/network/v2/api/site/{site}/network-members-groups`. Network `10.4.57`
+was live-verified to accept the existing Integration API key and return 12
+configured groups with group ID, name, type, and member MAC addresses. The
+`list` action returns projected group definitions and can optionally include
+the member MAC addresses. The `audit` action joins those memberships to the
+official connected-client list and reports connected clients with no group
+assignment. Because the official contract exposes connected clients rather
+than complete offline history, the audit explicitly does not claim to identify
+ungrouped offline clients. No client-group create, update, reorder, or delete
+operation is exposed.
 
 `unifi_alerts` separately sends `{}` to `/proxy/network/v2/api/site/{site}/system-log/all`. Although the endpoint uses POST, it is a read-only collection query: callers cannot supply a body, path, or method. Network 10.4.57 was live-verified to accept the existing Integration API key and return up to 50 records with pagination metadata. The projection preserves controller-supplied event/key, raw description/title, severity, status, category/subcategory, type, target, timestamp, and a small allowlist from `parameters`, including IP address, affected clients, learn-more reference, object, console, count, platform, section, and administrator identifiers. Raw parameter objects and unrelated fields are discarded.
 
@@ -78,20 +90,20 @@ Run the live diagnostic without printing secrets:
   doctor
 ```
 
-`--env-file /absolute/path/.env` is also accepted. The diagnostic checks configuration, successful secret injection, normal TLS validation, `/v1/info`, contract selection, site discovery, private enrichment, the fixed System Logs query, and—when configured—read-only Site Manager fleet access.
+`--env-file /absolute/path/.env` is also accepted. The diagnostic checks configuration, successful secret injection, normal TLS validation, `/v1/info`, contract selection, site discovery, private enrichment, the fixed client-group audit, the fixed System Logs query, and—when configured—read-only Site Manager fleet access.
 
 ## MCP tools
 
-The server exposes 29 tools:
+The server exposes 30 tools:
 
 - Discovery, snapshots, and fleet data: `unifi_get_capabilities`, `unifi_get_site_snapshot`, `unifi_site_manager`, `unifi_isp_metrics`
-- Grouped reads: `unifi_sites`, `unifi_devices`, `unifi_clients`, `unifi_alerts`, `unifi_networks`, `unifi_wifi`, `unifi_hotspot`, `unifi_firewall`, `unifi_acl`, `unifi_switching`, `unifi_dns`, `unifi_traffic_lists`, `unifi_supporting_resources`
+- Grouped reads: `unifi_sites`, `unifi_devices`, `unifi_clients`, `unifi_client_groups`, `unifi_alerts`, `unifi_networks`, `unifi_wifi`, `unifi_hotspot`, `unifi_firewall`, `unifi_acl`, `unifi_switching`, `unifi_dns`, `unifi_traffic_lists`, `unifi_supporting_resources`
 - Contract-defined read escape hatch: `unifi_read_operation`
 - Domain previews: `unifi_preview_device_change`, `unifi_preview_client_change`, `unifi_preview_network_change`, `unifi_preview_wifi_change`, `unifi_preview_hotspot_change`, `unifi_preview_firewall_change`, `unifi_preview_acl_change`, `unifi_preview_dns_change`, `unifi_preview_traffic_list_change`
 - Contract-defined write preview: `unifi_preview_operation`
 - Confirmed apply: `unifi_apply_change`
 
-Official read tools support the contract's offset, limit, and filter parameters. Page responses include `_connector.truncated`; when true, request another page. `unifi_alerts` accepts a local 1-50 limit over the first System Logs page and reports the controller's page and total counts. Set `includeRead=false` to retain only records whose direct controller status is `NEW`; no meaning is inferred for other status values. Read responses also include observation/source metadata when their response shape can carry it. Device-detail and client responses include `_connector.contract` and `_connector.knownLimitations` when response coverage needs explanation. A site is auto-selected only if exactly one exists or `UNIFI_DEFAULT_SITE_ID` is configured.
+Official read tools support the contract's offset, limit, and filter parameters. Page responses include `_connector.truncated`; when true, request another page. `unifi_client_groups` supports `list` and `audit`; `includeMembers=true` includes projected configured member MAC addresses. The audit reports connected clients with no group and carries an explicit offline-history limitation. `unifi_alerts` accepts a local 1-50 limit over the first System Logs page and reports the controller's page and total counts. Set `includeRead=false` to retain only records whose direct controller status is `NEW`; no meaning is inferred for other status values. Read responses also include observation/source metadata when their response shape can carry it. Device-detail and client responses include `_connector.contract` and `_connector.knownLimitations` when response coverage needs explanation. A site is auto-selected only if exactly one exists or `UNIFI_DEFAULT_SITE_ID` is configured.
 
 `unifi_site_manager` actions are `hosts`, `host`, `sites`, and `devices`. List actions use `pageSize` from 1 to 500 and return an opaque `pagination.continuation`; pass it back as `nextToken` for the next call. `host` requires `hostId`; `devices` optionally filters by host. `unifi_isp_metrics` accepts interval `5m` or `1h`, duration `24h` for 5-minute metrics, duration `7d` or `30d` for hourly metrics, or explicit RFC3339 timestamps. Optional targeted queries accept an array of `{ hostId, siteId, beginTimestamp?, endTimestamp? }`.
 

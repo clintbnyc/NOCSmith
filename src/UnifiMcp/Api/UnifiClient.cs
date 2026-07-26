@@ -87,6 +87,13 @@ public sealed class UnifiClient : IUnifiClient, IDisposable
             null,
             cancellationToken);
 
+    public Task<JsonNode?> ReadNetworkMembersGroupsAsync(string internalSiteReference, CancellationToken cancellationToken) =>
+        SendWithReadRetriesAsync(
+            HttpMethod.Get,
+            BuildNetworkMembersGroupsReadPath(internalSiteReference),
+            null,
+            cancellationToken);
+
     public Task<JsonNode?> QuerySystemLogsAsync(string internalSiteReference, CancellationToken cancellationToken) =>
         SendWithReadRetriesAsync(
             HttpMethod.Post,
@@ -270,6 +277,12 @@ public sealed class UnifiClient : IUnifiClient, IDisposable
     {
         var encodedSiteReference = EncodeInternalSiteReference(internalSiteReference);
         return $"../v2/api/site/{encodedSiteReference}/clients/active?includeTrafficUsage=true&includeUnifiDevices=true";
+    }
+
+    private static string BuildNetworkMembersGroupsReadPath(string internalSiteReference)
+    {
+        var encodedSiteReference = EncodeInternalSiteReference(internalSiteReference);
+        return $"../v2/api/site/{encodedSiteReference}/network-members-groups";
     }
 
     private static string EncodeInternalSiteReference(string internalSiteReference)

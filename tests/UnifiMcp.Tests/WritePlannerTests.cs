@@ -334,6 +334,9 @@ public sealed class WritePlannerTests
         public Task<JsonNode?> ReadPrivateClientsAsync(string internalSiteReference, CancellationToken cancellationToken) =>
             throw new NotSupportedException();
 
+        public Task<JsonNode?> ReadNetworkMembersGroupsAsync(string internalSiteReference, CancellationToken cancellationToken) =>
+            throw new NotSupportedException();
+
         public Task<JsonNode?> QuerySystemLogsAsync(string internalSiteReference, CancellationToken cancellationToken) =>
             throw new NotSupportedException();
     }

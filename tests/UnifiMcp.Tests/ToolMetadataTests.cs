@@ -19,7 +19,7 @@ public sealed class ToolMetadataTests
             .Where(item => item.Attribute is not null)
             .ToArray();
 
-        Assert.Equal(29, tools.Length);
+        Assert.Equal(30, tools.Length);
         foreach (var tool in tools)
         {
             if (string.Equals(tool.Attribute!.Name, "unifi_apply_change", StringComparison.Ordinal))
