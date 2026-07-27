@@ -1,4 +1,5 @@
 using System.Globalization;
+using System.Net;
 using System.Text.Json.Nodes;
 
 namespace UnifiMcp.Api;
@@ -9,12 +10,14 @@ public sealed class SiteManagerRateLimiter
     public const int DefaultQueueLimit = 100;
 
     private static readonly TimeSpan DefaultWindow = TimeSpan.FromMinutes(1);
+    public static readonly TimeSpan DefaultMaximumProviderWait = TimeSpan.FromMinutes(5);
 
     private readonly object _sync = new();
     private readonly Queue<DateTimeOffset> _requests = new();
     private readonly int _permitLimit;
     private readonly int _queueLimit;
     private readonly TimeSpan _window;
+    private readonly TimeSpan _maximumProviderWait;
     private readonly Func<DateTimeOffset> _getUtcNow;
     private readonly Func<TimeSpan, CancellationToken, Task> _delay;
     private int _waiting;
@@ -24,6 +27,7 @@ public sealed class SiteManagerRateLimiter
         int permitLimit = DefaultPermitLimit,
         TimeSpan? window = null,
         int queueLimit = DefaultQueueLimit,
+        TimeSpan? maximumProviderWait = null,
         Func<DateTimeOffset>? getUtcNow = null,
         Func<TimeSpan, CancellationToken, Task>? delay = null)
     {
@@ -37,31 +41,79 @@ public sealed class SiteManagerRateLimiter
             throw new ArgumentOutOfRangeException(nameof(queueLimit));
         }
 
+        var effectiveMaximumProviderWait =
+            maximumProviderWait ?? DefaultMaximumProviderWait;
+        if (effectiveMaximumProviderWait <= TimeSpan.Zero)
+        {
+            throw new ArgumentOutOfRangeException(nameof(maximumProviderWait));
+        }
+
         _permitLimit = permitLimit;
         _window = window ?? DefaultWindow;
         _queueLimit = queueLimit;
+        _maximumProviderWait = effectiveMaximumProviderWait;
         _getUtcNow = getUtcNow ?? (() => DateTimeOffset.UtcNow);
         _delay = delay ?? Task.Delay;
     }
 
     public Task WaitAsync(CancellationToken cancellationToken)
     {
+        return WaitForAvailabilityAsync(
+            acquirePermit: true,
+            cancellationToken);
+    }
+
+    public Task WaitForAvailabilityAsync(CancellationToken cancellationToken)
+    {
+        return WaitForAvailabilityAsync(
+            acquirePermit: false,
+            cancellationToken);
+    }
+
+    public bool TryAcquirePermit()
+    {
+        lock (_sync)
+        {
+            var now = _getUtcNow();
+            Prune(now);
+            ThrowIfProviderWaitExceedsMaximum(now);
+            if (IsProviderCooldownActive(now) || _requests.Count >= _permitLimit)
+            {
+                return false;
+            }
+
+            _requests.Enqueue(now);
+            return true;
+        }
+    }
+
+    private Task WaitForAvailabilityAsync(
+        bool acquirePermit,
+        CancellationToken cancellationToken)
+    {
         cancellationToken.ThrowIfCancellationRequested();
         lock (_sync)
         {
             var now = _getUtcNow();
             Prune(now);
+            ThrowIfProviderWaitExceedsMaximum(now);
             if (!IsProviderCooldownActive(now) && _requests.Count < _permitLimit)
             {
-                _requests.Enqueue(now);
+                if (acquirePermit)
+                {
+                    _requests.Enqueue(now);
+                }
+
                 return Task.CompletedTask;
             }
         }
 
-        return WaitQueuedAsync(cancellationToken);
+        return WaitQueuedAsync(acquirePermit, cancellationToken);
     }
 
-    private async Task WaitQueuedAsync(CancellationToken cancellationToken)
+    private async Task WaitQueuedAsync(
+        bool acquirePermit,
+        CancellationToken cancellationToken)
     {
         var waiting = Interlocked.Increment(ref _waiting);
         if (waiting > _queueLimit)
@@ -80,9 +132,14 @@ public sealed class SiteManagerRateLimiter
                 {
                     var now = _getUtcNow();
                     Prune(now);
+                    ThrowIfProviderWaitExceedsMaximum(now);
                     if (!IsProviderCooldownActive(now) && _requests.Count < _permitLimit)
                     {
-                        _requests.Enqueue(now);
+                        if (acquirePermit)
+                        {
+                            _requests.Enqueue(now);
+                        }
+
                         return;
                     }
 
@@ -146,6 +203,7 @@ public sealed class SiteManagerRateLimiter
             ["permitLimit"] = _permitLimit,
             ["windowSeconds"] = _window.TotalSeconds,
             ["queueLimit"] = _queueLimit,
+            ["maximumProviderWaitSeconds"] = _maximumProviderWait.TotalSeconds,
             ["requestsInCurrentWindow"] = used,
             ["waitingRequests"] = Volatile.Read(ref _waiting),
             ["providerRetryAt"] = providerRetryAt?.ToString("O", CultureInfo.InvariantCulture),
@@ -172,6 +230,21 @@ public sealed class SiteManagerRateLimiter
 
     private bool IsProviderCooldownActive(DateTimeOffset now) =>
         _providerRetryAt is DateTimeOffset retryAt && retryAt > now;
+
+    private void ThrowIfProviderWaitExceedsMaximum(DateTimeOffset now)
+    {
+        if (_providerRetryAt is not DateTimeOffset retryAt ||
+            retryAt - now <= _maximumProviderWait)
+        {
+            return;
+        }
+
+        throw new SiteManagerApiException(
+            HttpStatusCode.TooManyRequests,
+            $"UniFi Site Manager rate-limited the request (429); retry at {retryAt:O}.",
+            "provider_cooldown",
+            retryAt);
+    }
 }
 
 public sealed class SiteManagerRateLimitQueueException : Exception

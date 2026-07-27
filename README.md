@@ -17,7 +17,7 @@ It does not use the stopped `/srv/unifi` Docker rollback stack, controller datab
 - Site Manager permits only stable `/v1` host, site, device, and ISP-metric reads. Early Access, SD-WAN, Cloud Connector proxying, arbitrary URLs, and Site Manager writes are rejected.
 - Responses, exceptions, snapshots, and previews are recursively redacted. Wi-Fi credentials, API keys, tokens, passwords, pre-shared keys, and hotspot voucher codes are never returned.
 - Read operations retry 429, transient HTTP failures, and timeouts, including the fixed query-style System Logs POST. Mutations are sent exactly once and are never automatically retried.
-- Site Manager requests share a process-local rolling ceiling of 9,000 requests per 60 seconds, 100-request rate-limit and concurrency queues, and four concurrent request slots. Discovery pages use the provider maximum of 500 records and are cached/coalesced for five minutes. A `429` establishes a process-wide cooldown from delta-seconds or HTTP-date `Retry-After`, so no newly dispatched request bypasses the provider wait. Waits beyond five minutes return structured `rateLimited` metadata.
+- Site Manager requests share a process-local rolling ceiling of 9,000 requests per 60 seconds, 100-request rate-limit and concurrency queues, and four concurrent request slots. Discovery pages use the provider maximum of 500 records and are cached/coalesced for five minutes. A `429` establishes a process-wide cooldown from delta-seconds or HTTP-date `Retry-After`; cooldown waits occur without occupying a dispatch slot, and the permit is rechecked after a slot is acquired so no newly dispatched request bypasses the provider wait. Waits beyond five minutes return structured `rateLimited` metadata.
 
 ## Prerequisites
 

@@ -16,7 +16,8 @@ public sealed class SiteManagerClient : ISiteManagerClient, IDisposable
     private const int MaximumConcurrentRequests = 4;
     private const int MaximumConcurrencyQueue = 100;
     private const int MaximumResponseBytes = 10 * 1024 * 1024;
-    private static readonly TimeSpan MaximumRetryWait = TimeSpan.FromMinutes(5);
+    private static readonly TimeSpan MaximumRetryWait =
+        SiteManagerRateLimiter.DefaultMaximumProviderWait;
 
     private readonly HttpClient _httpClient;
     private readonly string? _apiKey;
@@ -209,39 +210,49 @@ public sealed class SiteManagerClient : ISiteManagerClient, IDisposable
         JsonNode? body,
         CancellationToken cancellationToken)
     {
-        await WaitForConcurrencyAsync(cancellationToken).ConfigureAwait(false);
-        try
+        while (true)
         {
-            await _rateLimiter.WaitAsync(cancellationToken).ConfigureAwait(false);
-            using var request = new HttpRequestMessage(method, relativePath);
-            request.Headers.TryAddWithoutValidation("X-API-Key", _apiKey);
-            if (body is not null)
+            cancellationToken.ThrowIfCancellationRequested();
+            await _rateLimiter.WaitForAvailabilityAsync(cancellationToken).ConfigureAwait(false);
+            await WaitForConcurrencyAsync(cancellationToken).ConfigureAwait(false);
+            try
             {
-                request.Content = new StringContent(body.ToJsonString(), Encoding.UTF8, "application/json");
-            }
+                cancellationToken.ThrowIfCancellationRequested();
+                if (!_rateLimiter.TryAcquirePermit())
+                {
+                    continue;
+                }
 
-            using var response = await _httpClient.SendAsync(
-                request,
-                HttpCompletionOption.ResponseHeadersRead,
-                cancellationToken).ConfigureAwait(false);
-            var content = await ReadBoundedContentAsync(response, cancellationToken).ConfigureAwait(false);
-            return response.IsSuccessStatusCode
-                ? new AttemptResponse(
-                    true,
-                    ParseResponse(content, response.StatusCode),
-                    response.StatusCode,
-                    content,
-                    null)
-                : new AttemptResponse(
-                    false,
-                    null,
-                    response.StatusCode,
-                    content,
-                    ReadRetryAt(response.Headers.RetryAfter));
-        }
-        finally
-        {
-            _concurrency.Release();
+                using var request = new HttpRequestMessage(method, relativePath);
+                request.Headers.TryAddWithoutValidation("X-API-Key", _apiKey);
+                if (body is not null)
+                {
+                    request.Content = new StringContent(body.ToJsonString(), Encoding.UTF8, "application/json");
+                }
+
+                using var response = await _httpClient.SendAsync(
+                    request,
+                    HttpCompletionOption.ResponseHeadersRead,
+                    cancellationToken).ConfigureAwait(false);
+                var content = await ReadBoundedContentAsync(response, cancellationToken).ConfigureAwait(false);
+                return response.IsSuccessStatusCode
+                    ? new AttemptResponse(
+                        true,
+                        ParseResponse(content, response.StatusCode),
+                        response.StatusCode,
+                        content,
+                        null)
+                    : new AttemptResponse(
+                        false,
+                        null,
+                        response.StatusCode,
+                        content,
+                        ReadRetryAt(response.Headers.RetryAfter));
+            }
+            finally
+            {
+                _concurrency.Release();
+            }
         }
     }
 

@@ -20,7 +20,7 @@ public static class UnifiTools
         Title = "Get UniFi connector capabilities",
         ReadOnly = true,
         Destructive = false,
-        OpenWorld = false,
+        OpenWorld = true,
         UseStructuredContent = true)]
     [Description("List the allowlisted UniFi API operations and report the live application and OpenAPI contract versions. Use this before the generic operation tools.")]
     public static Task<ToolResponse> GetCapabilities(
@@ -116,7 +116,7 @@ public static class UnifiTools
             ToNode(targets),
             cancellationToken));
 
-    [McpServerTool(Name = "unifi_get_site_snapshot", Title = "Get UniFi site snapshot", ReadOnly = true, Destructive = false, OpenWorld = false, UseStructuredContent = true)]
+    [McpServerTool(Name = "unifi_get_site_snapshot", Title = "Get UniFi site snapshot", ReadOnly = true, Destructive = false, OpenWorld = true, UseStructuredContent = true)]
     [Description("Collect a recommendation-oriented snapshot of devices, clients, networks, Wi-Fi, firewall, ACL, DNS, switching, VPN, WAN, and traffic-list state. Sections report ok, notApplicable, or failed independently with source operations and observation times.")]
     public static Task<ToolResponse> GetSiteSnapshot(
         SnapshotService snapshots,
@@ -135,7 +135,7 @@ public static class UnifiTools
         CancellationToken cancellationToken = default) =>
         ReadDomain(domains, "sites", action, null, null, offset, limit, filter, cancellationToken);
 
-    [McpServerTool(Name = "unifi_devices", Title = "Read UniFi devices", ReadOnly = true, Destructive = false, OpenWorld = false, UseStructuredContent = true)]
+    [McpServerTool(Name = "unifi_devices", Title = "Read UniFi devices", ReadOnly = true, Destructive = false, OpenWorld = true, UseStructuredContent = true)]
     [Description("Read adopted or pending UniFi devices. Actions: pending, list, get, statistics. When opt-in legacy read enrichment is enabled, list and get responses project port labels, STP-related state and configuration fields, and notes/comments without returning raw legacy data. The normalized UniFi UI Edge/Participant role is unavailable.")]
     public static Task<ToolResponse> Devices(
         DomainReadService domains,
@@ -346,7 +346,7 @@ public static class UnifiTools
     public static Task<ToolResponse> SupportingResources(DomainReadService domains, string action, string? siteId = null, string? id = null, int? offset = null, int? limit = null, string? filter = null, CancellationToken cancellationToken = default) =>
         ReadDomain(domains, "supporting", action, siteId, id, offset, limit, filter, cancellationToken);
 
-    [McpServerTool(Name = "unifi_read_operation", Title = "Read an allowlisted UniFi API operation", ReadOnly = true, Destructive = false, OpenWorld = false, UseStructuredContent = true)]
+    [McpServerTool(Name = "unifi_read_operation", Title = "Read an allowlisted UniFi API operation", ReadOnly = true, Destructive = false, OpenWorld = true, UseStructuredContent = true)]
     [Description("Execute any GET operation present in unifi_get_capabilities. Arbitrary methods and URLs are rejected.")]
     public static Task<ToolResponse> ReadOperation(
         ReadService reads,

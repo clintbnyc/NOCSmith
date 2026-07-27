@@ -48,7 +48,15 @@ public sealed class ToolMetadataTests
             .OrderBy(name => name, StringComparer.Ordinal)
             .ToArray();
         Assert.Equal(
-            new[] { "unifi_isp_metrics", "unifi_site_manager" },
+            new[]
+            {
+                "unifi_devices",
+                "unifi_get_capabilities",
+                "unifi_get_site_snapshot",
+                "unifi_isp_metrics",
+                "unifi_read_operation",
+                "unifi_site_manager"
+            },
             openWorldTools);
     }
 }
