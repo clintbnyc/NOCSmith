@@ -16,6 +16,15 @@ public sealed class EnvironmentFileLoaderTests
         "UNIFI_CLIENT_JOURNAL_DB_PATH",
         "UNIFI_CLIENT_JOURNAL_RETENTION_DAYS",
         "UNIFI_CLIENT_JOURNAL_MAX_MIB",
+        "UNIFI_ENABLE_SCHEDULED_COLLECTION",
+        "UNIFI_SCHEDULED_COLLECTION_INTERVAL_MINUTES",
+        "UNIFI_SCHEDULED_COLLECTION_SITE_ID",
+        "UNIFI_SCHEDULED_COLLECTION_HISTORY_HOURS",
+        "UNIFI_MCP_HTTP_AUTH_MODE",
+        "UNIFI_MCP_HTTP_BEARER_TOKEN",
+        "UNIFI_MCP_TAILSCALE_ALLOWED_USERS",
+        "UNIFI_MCP_HTTP_PUBLIC_URL",
+        "UNIFI_MCP_HTTP_LISTEN_URL",
         "UNIFI_SITE_API_KEY",
         "UNIFI_SITE_MANAGER_LOCAL_HOST_ID",
         "UNRELATED_VARIABLE"
@@ -35,6 +44,15 @@ public sealed class EnvironmentFileLoaderTests
             "UNIFI_CLIENT_JOURNAL_DB_PATH=/tmp/unifi-journal/client.db\n" +
             "UNIFI_CLIENT_JOURNAL_RETENTION_DAYS=120\n" +
             "UNIFI_CLIENT_JOURNAL_MAX_MIB=512\n" +
+            "UNIFI_ENABLE_SCHEDULED_COLLECTION=true\n" +
+            "UNIFI_SCHEDULED_COLLECTION_INTERVAL_MINUTES=60\n" +
+            "UNIFI_SCHEDULED_COLLECTION_SITE_ID=6cc5f1b8-cec7-4c50-9b92-805b73892756\n" +
+            "UNIFI_SCHEDULED_COLLECTION_HISTORY_HOURS=24\n" +
+            "UNIFI_MCP_HTTP_AUTH_MODE=bearer\n" +
+            "UNIFI_MCP_HTTP_BEARER_TOKEN=abcdefghijklmnopqrstuvwxyz012345\n" +
+            "UNIFI_MCP_TAILSCALE_ALLOWED_USERS=clint@example.test\n" +
+            "UNIFI_MCP_HTTP_PUBLIC_URL=https://unifi-mcp.example.test/mcp\n" +
+            "UNIFI_MCP_HTTP_LISTEN_URL=http://0.0.0.0:8080\n" +
             "UNIFI_SITE_API_KEY=site-manager-key\n" +
             "UNIFI_SITE_MANAGER_LOCAL_HOST_ID=host:123\n" +
             "UNRELATED_VARIABLE=must-not-be-imported\n");
@@ -55,6 +73,13 @@ public sealed class EnvironmentFileLoaderTests
             Environment.GetEnvironmentVariable("UNIFI_CLIENT_JOURNAL_DB_PATH"));
         Assert.Equal("120", Environment.GetEnvironmentVariable("UNIFI_CLIENT_JOURNAL_RETENTION_DAYS"));
         Assert.Equal("512", Environment.GetEnvironmentVariable("UNIFI_CLIENT_JOURNAL_MAX_MIB"));
+        Assert.Equal("true", Environment.GetEnvironmentVariable("UNIFI_ENABLE_SCHEDULED_COLLECTION"));
+        Assert.Equal(
+            "60",
+            Environment.GetEnvironmentVariable("UNIFI_SCHEDULED_COLLECTION_INTERVAL_MINUTES"));
+        Assert.Equal(
+            "https://unifi-mcp.example.test/mcp",
+            Environment.GetEnvironmentVariable("UNIFI_MCP_HTTP_PUBLIC_URL"));
         Assert.Equal("site-manager-key", Environment.GetEnvironmentVariable("UNIFI_SITE_API_KEY"));
         Assert.Equal("host:123", Environment.GetEnvironmentVariable("UNIFI_SITE_MANAGER_LOCAL_HOST_ID"));
         Assert.Null(Environment.GetEnvironmentVariable("UNRELATED_VARIABLE"));

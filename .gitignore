@@ -3,6 +3,8 @@ obj/
 TestResults/
 .DS_Store
 .env
+data/
+secrets/
 .dotnet-home/
 .nuget/
 *.user

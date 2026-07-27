@@ -52,6 +52,7 @@ public sealed partial class ClientJournalService
         int? historyHours,
         CancellationToken cancellationToken)
     {
+        using var lease = _store.AcquireCollectionLease();
         var collection = await _collector
             .CollectAsync(siteId, historyHours, cancellationToken)
             .ConfigureAwait(false);

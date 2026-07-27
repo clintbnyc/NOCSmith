@@ -1,0 +1,12 @@
+.git
+.codex
+.dotnet-home
+.nuget
+.env
+**/bin
+**/obj
+TestResults
+data
+secrets
+*.user
+*.suo

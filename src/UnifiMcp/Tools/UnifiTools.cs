@@ -507,7 +507,8 @@ public static class UnifiTools
             ClientJournalSizeException or
             ClientJournalMigrationException or
             ClientJournalUnavailableException or
-            ClientJournalRecoveryException)
+            ClientJournalRecoveryException or
+            ClientCollectionInProgressException)
         {
             throw new McpException(exception.Message, exception);
         }

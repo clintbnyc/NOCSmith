@@ -24,6 +24,31 @@ public sealed class ClientJournalStoreTests
     }
 
     [Fact]
+    public void Collection_lease_is_private_exclusive_and_released_on_dispose()
+    {
+        if (OperatingSystem.IsWindows())
+        {
+            return;
+        }
+
+        using var directory = TemporaryPrivateDirectory.Create();
+        var path = Path.Combine(directory.Path, "journal.db");
+        var store = new ClientJournalStore(Configuration(path, enabled: true));
+        var lease = store.AcquireCollectionLease();
+        var lockPath = path + ".collect.lock";
+
+        Assert.True(File.Exists(lockPath));
+        Assert.Equal(
+            UnixFileMode.UserRead | UnixFileMode.UserWrite,
+            File.GetUnixFileMode(lockPath));
+        Assert.Throws<ClientCollectionInProgressException>(
+            store.AcquireCollectionLease);
+
+        lease.Dispose();
+        using var reacquired = store.AcquireCollectionLease();
+    }
+
+    [Fact]
     public async Task Explicit_initialization_creates_a_missing_private_parent()
     {
         if (OperatingSystem.IsWindows())

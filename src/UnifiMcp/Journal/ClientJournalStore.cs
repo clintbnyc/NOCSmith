@@ -117,6 +117,53 @@ public sealed class ClientJournalStore
         _configuration.ClientJournalDatabasePath ??
         throw new ConfigurationException("The client journal database path is not configured.");
 
+    public ClientJournalCollectionLease AcquireCollectionLease()
+    {
+        RequireEnabled();
+        EnsureWritablePath();
+        if (OperatingSystem.IsWindows())
+        {
+            throw new ConfigurationException(
+                "The client journal currently requires Unix filesystem permission semantics.");
+        }
+
+        var lockPath = DatabasePath + ".collect.lock";
+        if (File.Exists(lockPath))
+        {
+            ValidateNoSymlink(lockPath, isDirectory: false);
+        }
+
+        FileStream stream;
+        try
+        {
+            stream = new FileStream(
+                lockPath,
+                FileMode.OpenOrCreate,
+                FileAccess.ReadWrite,
+                FileShare.None);
+        }
+        catch (IOException exception)
+        {
+            throw new ClientCollectionInProgressException(
+                "Another client journal collection is already in progress.",
+                exception);
+        }
+
+        try
+        {
+            File.SetUnixFileMode(
+                lockPath,
+                UnixFileMode.UserRead | UnixFileMode.UserWrite);
+            ValidateNoSymlink(lockPath, isDirectory: false);
+            return new ClientJournalCollectionLease(stream);
+        }
+        catch
+        {
+            stream.Dispose();
+            throw;
+        }
+    }
+
     public async Task InitializeAsync(CancellationToken cancellationToken)
     {
         RequireEnabled();
@@ -1594,6 +1641,26 @@ public sealed record SourceSuccessRate(
     long CompleteCount);
 
 public sealed record QuarantineInventory(int Count, long Bytes);
+
+public sealed class ClientJournalCollectionLease : IDisposable
+{
+    private readonly FileStream _stream;
+
+    internal ClientJournalCollectionLease(FileStream stream)
+    {
+        _stream = stream;
+    }
+
+    public void Dispose() => _stream.Dispose();
+}
+
+public sealed class ClientCollectionInProgressException : Exception
+{
+    public ClientCollectionInProgressException(string message, Exception? innerException = null)
+        : base(message, innerException)
+    {
+    }
+}
 
 public sealed record JournalInspection(
     string State,
