@@ -139,6 +139,98 @@ public sealed class SiteManagerClientTests
     }
 
     [Fact]
+    public async Task Long_provider_cooldown_rejects_subsequent_requests_before_dispatch()
+    {
+        var retryAt = Now.AddMinutes(6);
+        var delays = new List<TimeSpan>();
+        var handler = new RecordingHandler(_ =>
+        {
+            var response = JsonResponse(HttpStatusCode.TooManyRequests, "{}");
+            response.Headers.RetryAfter = new RetryConditionHeaderValue(retryAt);
+            return response;
+        });
+        using var client = CreateClient(
+            handler,
+            delay: (value, _) =>
+            {
+                delays.Add(value);
+                return Task.CompletedTask;
+            });
+        await Assert.ThrowsAsync<SiteManagerApiException>(() =>
+            client.GetAsync("v1/hosts", CancellationToken.None));
+
+        var subsequent = await Assert.ThrowsAsync<SiteManagerApiException>(() =>
+            client.GetAsync("v1/sites", CancellationToken.None));
+
+        Assert.True(subsequent.IsRateLimited);
+        Assert.Equal("provider_cooldown", subsequent.Code);
+        Assert.Equal(retryAt, subsequent.RetryAt);
+        Assert.Single(handler.Requests);
+        Assert.Empty(delays);
+        Assert.Equal(
+            0,
+            client.Describe()["waitingForConcurrency"]!.GetValue<int>());
+    }
+
+    [Fact]
+    public async Task Bounded_provider_cooldown_waits_without_occupying_concurrency_slots()
+    {
+        var now = Now;
+        var retryAt = now.AddSeconds(30);
+        var releaseCooldown = new TaskCompletionSource<bool>(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        var limiter = new SiteManagerRateLimiter(
+            permitLimit: 10,
+            getUtcNow: () => now,
+            delay: async (_, cancellationToken) =>
+            {
+                await releaseCooldown.Task.WaitAsync(cancellationToken).ConfigureAwait(false);
+                now = retryAt;
+            });
+        limiter.DeferUntil(retryAt);
+        var handler = new CountingHandler();
+        using var client = CreateClient(
+            handler,
+            rateLimiter: limiter,
+            getUtcNow: () => now);
+        var requests = Enumerable.Range(0, 5)
+            .Select(_ => client.GetAsync("v1/hosts", CancellationToken.None))
+            .ToArray();
+        await WaitUntilAsync(() =>
+            limiter.Describe()["waitingRequests"]!.GetValue<int>() == requests.Length);
+
+        Assert.Equal(
+            0,
+            client.Describe()["waitingForConcurrency"]!.GetValue<int>());
+        Assert.Equal(0, handler.Attempts);
+
+        releaseCooldown.SetResult(true);
+        await Task.WhenAll(requests);
+
+        Assert.Equal(requests.Length, handler.Attempts);
+    }
+
+    [Fact]
+    public async Task Cancellation_precedes_long_provider_cooldown_rejection()
+    {
+        var limiter = new SiteManagerRateLimiter(getUtcNow: () => Now);
+        limiter.DeferUntil(Now.AddMinutes(6));
+        var handler = new RecordingHandler(_ =>
+            JsonResponse(HttpStatusCode.OK, "{\"data\":[]}"));
+        using var client = CreateClient(
+            handler,
+            rateLimiter: limiter,
+            getUtcNow: () => Now);
+        using var cancellation = new CancellationTokenSource();
+        cancellation.Cancel();
+
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(() =>
+            client.GetAsync("v1/hosts", cancellation.Token));
+
+        Assert.Empty(handler.Requests);
+    }
+
+    [Fact]
     public async Task Missing_retry_after_uses_bounded_backoff_and_exhausts_after_three_attempts()
     {
         var delays = new List<TimeSpan>();
@@ -320,7 +412,9 @@ public sealed class SiteManagerClientTests
         HttpMessageHandler handler,
         string? siteManagerKey = "site-manager-key",
         Func<TimeSpan, CancellationToken, Task>? delay = null,
-        Func<int, TimeSpan>? backoff = null)
+        Func<int, TimeSpan>? backoff = null,
+        SiteManagerRateLimiter? rateLimiter = null,
+        Func<DateTimeOffset>? getUtcNow = null)
     {
         var now = Now;
         var underlyingDelay = delay ??
@@ -332,7 +426,8 @@ public sealed class SiteManagerClientTests
             now += value;
         }
 
-        var limiter = new SiteManagerRateLimiter(
+        var clock = getUtcNow ?? (() => now);
+        var limiter = rateLimiter ?? new SiteManagerRateLimiter(
             getUtcNow: () => now,
             delay: DelayAndAdvance);
         return new SiteManagerClient(
@@ -346,7 +441,7 @@ public sealed class SiteManagerClientTests
             NullLogger<SiteManagerClient>.Instance,
             handler,
             limiter,
-            () => now,
+            clock,
             DelayAndAdvance,
             backoff);
     }
@@ -421,6 +516,22 @@ public sealed class SiteManagerClientTests
             Interlocked.Increment(ref _attempts);
             await Task.Delay(Timeout.InfiniteTimeSpan, cancellationToken).ConfigureAwait(false);
             throw new InvalidOperationException("The blocking handler should only exit through cancellation.");
+        }
+    }
+
+    private sealed class CountingHandler : HttpMessageHandler
+    {
+        private int _attempts;
+
+        public int Attempts => Volatile.Read(ref _attempts);
+
+        protected override Task<HttpResponseMessage> SendAsync(
+            HttpRequestMessage request,
+            CancellationToken cancellationToken)
+        {
+            Interlocked.Increment(ref _attempts);
+            return Task.FromResult(
+                JsonResponse(HttpStatusCode.OK, "{\"data\":[]}"));
         }
     }
 

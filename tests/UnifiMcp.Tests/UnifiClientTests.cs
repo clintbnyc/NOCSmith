@@ -143,6 +143,7 @@ public sealed class UnifiClientTests
 
         await client.ReadLegacyDevicesAsync("default", CancellationToken.None);
         await client.ReadPrivateClientsAsync("default", CancellationToken.None);
+        await client.ReadClientHistoryAsync("default", 24, CancellationToken.None);
         await client.ReadNetworkMembersGroupsAsync("default", CancellationToken.None);
         await client.QuerySystemLogsAsync("default", CancellationToken.None);
 
@@ -160,6 +161,15 @@ public sealed class UnifiClientTests
                 Assert.Equal("GET", request.Method);
                 Assert.Equal(
                     "https://unifi.nutria-newton.ts.net/proxy/network/v2/api/site/default/clients/active?includeTrafficUsage=true&includeUnifiDevices=true",
+                    request.Uri);
+                Assert.Equal("test-api-key", request.ApiKey);
+                Assert.Null(request.Body);
+            },
+            request =>
+            {
+                Assert.Equal("GET", request.Method);
+                Assert.Equal(
+                    "https://unifi.nutria-newton.ts.net/proxy/network/v2/api/site/default/clients/history?onlyNonBlocked=true&includeUnifiDevices=true&withinHours=24",
                     request.Uri);
                 Assert.Equal("test-api-key", request.ApiKey);
                 Assert.Null(request.Body);
@@ -214,7 +224,11 @@ public sealed class UnifiClientTests
         await Assert.ThrowsAsync<ArgumentException>(() =>
             client.ReadLegacyDevicesAsync("../default", CancellationToken.None));
         await Assert.ThrowsAsync<ArgumentException>(() =>
+            client.ReadClientHistoryAsync("../default", 24, CancellationToken.None));
+        await Assert.ThrowsAsync<ArgumentException>(() =>
             client.ReadNetworkMembersGroupsAsync("../default", CancellationToken.None));
+        await Assert.ThrowsAsync<ArgumentOutOfRangeException>(() =>
+            client.ReadClientHistoryAsync("default", 0, CancellationToken.None));
 
         Assert.Empty(handler.Requests);
     }

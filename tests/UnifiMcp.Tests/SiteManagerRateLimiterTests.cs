@@ -77,4 +77,71 @@ public sealed class SiteManagerRateLimiterTests
         Assert.False(limiter.Describe()["providerCooldownActive"]!.GetValue<bool>());
         Assert.Equal(1, limiter.Describe()["requestsInCurrentWindow"]!.GetValue<int>());
     }
+
+    [Fact]
+    public async Task Provider_cooldown_over_five_minutes_fails_without_waiting()
+    {
+        var now = new DateTimeOffset(2026, 7, 25, 12, 0, 0, TimeSpan.Zero);
+        var delays = new List<TimeSpan>();
+        var limiter = new SiteManagerRateLimiter(
+            permitLimit: 10,
+            window: TimeSpan.FromMinutes(1),
+            queueLimit: 2,
+            getUtcNow: () => now,
+            delay: (value, _) =>
+            {
+                delays.Add(value);
+                return Task.CompletedTask;
+            });
+        var retryAt = now.AddMinutes(5).Add(TimeSpan.FromTicks(1));
+        limiter.DeferUntil(retryAt);
+
+        var exception = await Assert.ThrowsAsync<SiteManagerApiException>(
+            () => limiter.WaitAsync(CancellationToken.None));
+
+        Assert.True(exception.IsRateLimited);
+        Assert.Equal(retryAt, exception.RetryAt);
+        Assert.Equal("provider_cooldown", exception.Code);
+        Assert.Empty(delays);
+        Assert.Equal(
+            0,
+            limiter.Describe()["waitingRequests"]!.GetValue<int>());
+    }
+
+    [Fact]
+    public async Task Availability_wait_does_not_reserve_a_dispatch_permit()
+    {
+        var now = new DateTimeOffset(2026, 7, 25, 12, 0, 0, TimeSpan.Zero);
+        var limiter = new SiteManagerRateLimiter(
+            permitLimit: 1,
+            getUtcNow: () => now);
+
+        await limiter.WaitForAvailabilityAsync(CancellationToken.None);
+
+        Assert.Equal(
+            0,
+            limiter.Describe()["requestsInCurrentWindow"]!.GetValue<int>());
+        Assert.True(limiter.TryAcquirePermit());
+        Assert.Equal(
+            1,
+            limiter.Describe()["requestsInCurrentWindow"]!.GetValue<int>());
+        Assert.False(limiter.TryAcquirePermit());
+    }
+
+    [Fact]
+    public async Task Final_permit_check_observes_a_new_provider_cooldown()
+    {
+        var now = new DateTimeOffset(2026, 7, 25, 12, 0, 0, TimeSpan.Zero);
+        var limiter = new SiteManagerRateLimiter(
+            permitLimit: 1,
+            getUtcNow: () => now);
+        await limiter.WaitForAvailabilityAsync(CancellationToken.None);
+
+        limiter.DeferUntil(now.AddSeconds(30));
+
+        Assert.False(limiter.TryAcquirePermit());
+        Assert.Equal(
+            0,
+            limiter.Describe()["requestsInCurrentWindow"]!.GetValue<int>());
+    }
 }

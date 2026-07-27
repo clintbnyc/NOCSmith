@@ -1,11 +1,13 @@
 using System.ComponentModel;
 using System.Text.Json;
 using System.Text.Json.Nodes;
+using Microsoft.Data.Sqlite;
 using ModelContextProtocol;
 using ModelContextProtocol.Server;
 using UnifiMcp.Api;
 using UnifiMcp.Configuration;
 using UnifiMcp.Contracts;
+using UnifiMcp.Journal;
 using UnifiMcp.Writes;
 
 namespace UnifiMcp.Tools;
@@ -18,7 +20,7 @@ public static class UnifiTools
         Title = "Get UniFi connector capabilities",
         ReadOnly = true,
         Destructive = false,
-        OpenWorld = false,
+        OpenWorld = true,
         UseStructuredContent = true)]
     [Description("List the allowlisted UniFi API operations and report the live application and OpenAPI contract versions. Use this before the generic operation tools.")]
     public static Task<ToolResponse> GetCapabilities(
@@ -28,6 +30,8 @@ public static class UnifiTools
         SiteManagerReadService siteManager,
         SiteManagerDeviceEnrichmentService siteManagerEnrichment,
         ClientGroupReadService clientGroups,
+        ClientHistoryReadService clientHistory,
+        ClientJournalService clientJournal,
         SystemLogReadService systemLogs,
         [Description("Probe the live controller contract again before returning capabilities.")] bool refresh = false,
         CancellationToken cancellationToken = default) =>
@@ -68,6 +72,8 @@ public static class UnifiTools
                 ["siteManager"] = siteManagerDescription,
                 ["siteManagerDeviceEnrichment"] = siteManagerEnrichment.Describe(),
                 ["clientGroups"] = clientGroups.Describe(),
+                ["clientHistory"] = clientHistory.Describe(),
+                ["clientJournal"] = clientJournal.Describe(),
                 ["systemLogs"] = systemLogs.Describe(),
                 ["operations"] = operations
             };
@@ -110,7 +116,7 @@ public static class UnifiTools
             ToNode(targets),
             cancellationToken));
 
-    [McpServerTool(Name = "unifi_get_site_snapshot", Title = "Get UniFi site snapshot", ReadOnly = true, Destructive = false, OpenWorld = false, UseStructuredContent = true)]
+    [McpServerTool(Name = "unifi_get_site_snapshot", Title = "Get UniFi site snapshot", ReadOnly = true, Destructive = false, OpenWorld = true, UseStructuredContent = true)]
     [Description("Collect a recommendation-oriented snapshot of devices, clients, networks, Wi-Fi, firewall, ACL, DNS, switching, VPN, WAN, and traffic-list state. Sections report ok, notApplicable, or failed independently with source operations and observation times.")]
     public static Task<ToolResponse> GetSiteSnapshot(
         SnapshotService snapshots,
@@ -129,7 +135,7 @@ public static class UnifiTools
         CancellationToken cancellationToken = default) =>
         ReadDomain(domains, "sites", action, null, null, offset, limit, filter, cancellationToken);
 
-    [McpServerTool(Name = "unifi_devices", Title = "Read UniFi devices", ReadOnly = true, Destructive = false, OpenWorld = false, UseStructuredContent = true)]
+    [McpServerTool(Name = "unifi_devices", Title = "Read UniFi devices", ReadOnly = true, Destructive = false, OpenWorld = true, UseStructuredContent = true)]
     [Description("Read adopted or pending UniFi devices. Actions: pending, list, get, statistics. When opt-in legacy read enrichment is enabled, list and get responses project port labels, STP-related state and configuration fields, and notes/comments without returning raw legacy data. The normalized UniFi UI Edge/Participant role is unavailable.")]
     public static Task<ToolResponse> Devices(
         DomainReadService domains,
@@ -143,9 +149,43 @@ public static class UnifiTools
         ReadDomain(domains, "devices", action, siteId, id, offset, limit, filter, cancellationToken);
 
     [McpServerTool(Name = "unifi_clients", Title = "Read UniFi clients", ReadOnly = true, Destructive = false, OpenWorld = false, UseStructuredContent = true)]
-    [Description("Read connected UniFi clients. Actions: list or get. Client type and uplink are controller-reported observation points; responses warn when third-party bridging prevents a reliable physical attachment inference. Opt-in legacy read enrichment projects client notes/comments.")]
-    public static Task<ToolResponse> Clients(DomainReadService domains, string action, string? siteId = null, string? id = null, int? offset = null, int? limit = null, string? filter = null, CancellationToken cancellationToken = default) =>
-        ReadDomain(domains, "clients", action, siteId, id, offset, limit, filter, cancellationToken);
+    [Description("Read UniFi clients. Actions: list and get retain official connected-client semantics. The opt-in history action separately classifies authoritative current clients, bounded non-blocked history records, and configured group-member MACs with no current or history record. History never alters the connected-client list.")]
+    public static Task<ToolResponse> Clients(
+        DomainReadService domains,
+        ClientHistoryReadService clientHistory,
+        [Description("Use list, get, or history.")] string action,
+        string? siteId = null,
+        [Description("Client UUID for get. Not accepted for history.")] string? id = null,
+        [Description("Page offset. For history, applied independently to each returned classification.")] int? offset = null,
+        [Description("Page limit. For history, 1-200 and applied independently to each classification.")] int? limit = null,
+        [Description("Official filter for list. Not accepted for history.")] string? filter = null,
+        [Description("For history only: 24, 72, 168, 336, 720, or 4320 hours. Defaults to 24.")] int? historyHours = null,
+        CancellationToken cancellationToken = default)
+    {
+        if (string.Equals(action, "history", StringComparison.OrdinalIgnoreCase))
+        {
+            if (!string.IsNullOrWhiteSpace(id) || !string.IsNullOrWhiteSpace(filter))
+            {
+                return Guard(() => Task.FromException<ToolResponse>(
+                    new ContractException("The history action does not accept id or filter.")));
+            }
+
+            return Guard(() => clientHistory.ReadAsync(
+                siteId,
+                historyHours,
+                offset,
+                limit,
+                cancellationToken));
+        }
+
+        if (historyHours is not null)
+        {
+            return Guard(() => Task.FromException<ToolResponse>(
+                new ContractException("historyHours is accepted only by the history action.")));
+        }
+
+        return ReadDomain(domains, "clients", action, siteId, id, offset, limit, filter, cancellationToken);
+    }
 
     [McpServerTool(Name = "unifi_client_groups", Title = "Read UniFi client groups", ReadOnly = true, Destructive = false, OpenWorld = false, UseStructuredContent = true)]
     [Description("Read UniFi Network client groups through one fixed private GET. Actions: list or audit. Audit joins configured group memberships to connected clients and identifies connected clients with no group assignment. No group writes are exposed.")]
@@ -156,6 +196,100 @@ public static class UnifiTools
         [Description("Include the configured member MAC addresses for each group. Defaults to false.")] bool includeMembers = false,
         CancellationToken cancellationToken = default) =>
         Guard(() => clientGroups.ReadAsync(action, siteId, includeMembers, cancellationToken));
+
+    [McpServerTool(
+        Name = "unifi_collect_client_observations",
+        Title = "Collect client observations into the local journal",
+        ReadOnly = false,
+        Destructive = false,
+        Idempotent = false,
+        OpenWorld = false,
+        UseStructuredContent = true)]
+    [Description("Explicitly collect official connected clients, bounded UI history, and configured groups independently, then atomically store only normalized projected fields in the opt-in local SQLite journal. This never changes the controller and returns no client rows.")]
+    public static Task<ToolResponse> CollectClientObservations(
+        ClientJournalService journal,
+        [Description("Optional site UUID.")] string? siteId = null,
+        [Description("24, 72, 168, 336, 720, or 4320. Defaults to 24.")] int? historyHours = null,
+        CancellationToken cancellationToken = default) =>
+        Guard(() => journal.CollectAsync(siteId, historyHours, cancellationToken));
+
+    [McpServerTool(
+        Name = "unifi_client_changes",
+        Title = "Query client observation changes",
+        ReadOnly = true,
+        Destructive = false,
+        OpenWorld = false,
+        UseStructuredContent = true)]
+    [Description("Compare complete source-specific journal snapshots. Omit sinceTimestamp to compare the previous two successful snapshots for each source. Absence from partial or failed sources is never interpreted as a change.")]
+    public static Task<ToolResponse> ClientChanges(
+        ClientJournalService journal,
+        string? siteId = null,
+        [Description("Optional RFC3339 timestamp.")] string? sinceTimestamp = null,
+        [Description("UI-history comparison window: 24, 72, 168, 336, 720, or 4320.")] int? historyHours = null,
+        int? offset = null,
+        int? limit = null,
+        CancellationToken cancellationToken = default) =>
+        Guard(() => journal.ChangesAsync(
+            siteId,
+            sinceTimestamp,
+            historyHours,
+            offset,
+            limit,
+            cancellationToken));
+
+    [McpServerTool(
+        Name = "unifi_client_observation_history",
+        Title = "Query one client's observation history",
+        ReadOnly = true,
+        Destructive = false,
+        OpenWorld = false,
+        UseStructuredContent = true)]
+    [Description("Return bounded source-grained journal observations for one normalized MAC. Partial observations are positive evidence only; gaps never imply offline, disconnected, removed, or no longer configured.")]
+    public static Task<ToolResponse> ClientObservationHistory(
+        ClientJournalService journal,
+        string macAddress,
+        string? siteId = null,
+        string? fromTimestamp = null,
+        string? toTimestamp = null,
+        int? offset = null,
+        int? limit = null,
+        CancellationToken cancellationToken = default) =>
+        Guard(() => journal.HistoryAsync(
+            macAddress,
+            siteId,
+            fromTimestamp,
+            toTimestamp,
+            offset,
+            limit,
+            cancellationToken));
+
+    [McpServerTool(
+        Name = "unifi_client_journal_health",
+        Title = "Inspect client journal health",
+        ReadOnly = true,
+        Destructive = false,
+        OpenWorld = false,
+        UseStructuredContent = true)]
+    [Description("Inspect the opt-in SQLite journal without creating, migrating, repairing, or returning client data. Reports disabled, notInitialized, healthy, migrationRequired, newerSchemaNotSupported, unsafePath, corrupt, or oversized state.")]
+    public static Task<ToolResponse> ClientJournalHealth(
+        ClientJournalService journal,
+        CancellationToken cancellationToken = default) =>
+        Guard(() => journal.HealthAsync(cancellationToken));
+
+    [McpServerTool(
+        Name = "unifi_recover_client_journal",
+        Title = "Quarantine and recreate a corrupt client journal",
+        ReadOnly = false,
+        Destructive = true,
+        Idempotent = false,
+        OpenWorld = false,
+        UseStructuredContent = true)]
+    [Description("Recheck the exact corruption fingerprint from health, quarantine the active DB/WAL/SHM set, and initialize a fresh migrated journal. Recovery is never automatic and restores the old set if fresh initialization fails.")]
+    public static Task<ToolResponse> RecoverClientJournal(
+        ClientJournalService journal,
+        string corruptionFingerprint,
+        CancellationToken cancellationToken = default) =>
+        Guard(() => journal.RecoverAsync(corruptionFingerprint, cancellationToken));
 
     [McpServerTool(Name = "unifi_alerts", Title = "Read UniFi alerts", ReadOnly = true, Destructive = false, OpenWorld = false, UseStructuredContent = true)]
     [Description("Read projected UniFi System Log events through one fixed query-style POST to v2/api/site/{site}/system-log/all. The operation is read-only, uses the existing Integration API key, accepts no caller-supplied request body, and never returns raw private API records.")]
@@ -212,7 +346,7 @@ public static class UnifiTools
     public static Task<ToolResponse> SupportingResources(DomainReadService domains, string action, string? siteId = null, string? id = null, int? offset = null, int? limit = null, string? filter = null, CancellationToken cancellationToken = default) =>
         ReadDomain(domains, "supporting", action, siteId, id, offset, limit, filter, cancellationToken);
 
-    [McpServerTool(Name = "unifi_read_operation", Title = "Read an allowlisted UniFi API operation", ReadOnly = true, Destructive = false, OpenWorld = false, UseStructuredContent = true)]
+    [McpServerTool(Name = "unifi_read_operation", Title = "Read an allowlisted UniFi API operation", ReadOnly = true, Destructive = false, OpenWorld = true, UseStructuredContent = true)]
     [Description("Execute any GET operation present in unifi_get_capabilities. Arbitrary methods and URLs are rejected.")]
     public static Task<ToolResponse> ReadOperation(
         ReadService reads,
@@ -355,12 +489,25 @@ public static class UnifiTools
             return await action().ConfigureAwait(false);
         }
         catch (Exception exception) when (
+            exception is SqliteException or
+            IOException or
+            UnauthorizedAccessException)
+        {
+            throw new McpException(
+                "The local client journal operation failed closed; run unifi_client_journal_health for safe diagnostics.",
+                exception);
+        }
+        catch (Exception exception) when (
             exception is ConfigurationException or
             ContractException or
             UnifiApiException or
             SiteManagerApiException or
             SiteManagerRateLimitQueueException or
-            ConfirmationException)
+            ConfirmationException or
+            ClientJournalSizeException or
+            ClientJournalMigrationException or
+            ClientJournalUnavailableException or
+            ClientJournalRecoveryException)
         {
             throw new McpException(exception.Message, exception);
         }

@@ -14,6 +14,10 @@ public sealed class ConfigurationTests
             ("UNIFI_DEFAULT_SITE_ID", null),
             ("UNIFI_TIMEOUT_SECONDS", null),
             ("UNIFI_ENABLE_LEGACY_READ_ENRICHMENT", null),
+            ("UNIFI_ENABLE_CLIENT_JOURNAL", null),
+            ("UNIFI_CLIENT_JOURNAL_DB_PATH", null),
+            ("UNIFI_CLIENT_JOURNAL_RETENTION_DAYS", null),
+            ("UNIFI_CLIENT_JOURNAL_MAX_MIB", null),
             ("UNIFI_SITE_API_KEY", null),
             ("UNIFI_SITE_MANAGER_LOCAL_HOST_ID", null));
 
@@ -21,6 +25,10 @@ public sealed class ConfigurationTests
 
         Assert.Equal("https://unifi.nutria-newton.ts.net/proxy/network/integration/", configuration.BaseUri.ToString());
         Assert.False(configuration.EnableLegacyReadEnrichment);
+        Assert.False(configuration.EnableClientJournal);
+        Assert.Null(configuration.ClientJournalDatabasePath);
+        Assert.Equal(90, configuration.ClientJournalRetentionDays);
+        Assert.Equal(256, configuration.ClientJournalMaximumMib);
         Assert.False(configuration.SiteManagerConfigured);
     }
 
@@ -95,6 +103,68 @@ public sealed class ConfigurationTests
         {
             Assert.Throws<ConfigurationException>(() => UnifiConfiguration.Load());
         }
+    }
+
+    [Fact]
+    public void Client_journal_requires_opt_in_and_an_absolute_path()
+    {
+        using (new EnvironmentScope(
+                   ("UNIFI_API_KEY", "test-key"),
+                   ("UNIFI_ENABLE_CLIENT_JOURNAL", "true"),
+                   ("UNIFI_CLIENT_JOURNAL_DB_PATH", null)))
+        {
+            Assert.Throws<ConfigurationException>(() => UnifiConfiguration.Load());
+        }
+
+        using (new EnvironmentScope(
+                   ("UNIFI_API_KEY", "test-key"),
+                   ("UNIFI_ENABLE_CLIENT_JOURNAL", "true"),
+                   ("UNIFI_CLIENT_JOURNAL_DB_PATH", "relative.db")))
+        {
+            Assert.Throws<ConfigurationException>(() => UnifiConfiguration.Load());
+        }
+
+        var absolute = Path.Combine(Path.GetTempPath(), "unifi-journal", "client.db");
+        using (new EnvironmentScope(
+                   ("UNIFI_API_KEY", "test-key"),
+                   ("UNIFI_ENABLE_CLIENT_JOURNAL", "true"),
+                   ("UNIFI_CLIENT_JOURNAL_DB_PATH", absolute),
+                   ("UNIFI_CLIENT_JOURNAL_RETENTION_DAYS", "3650"),
+                   ("UNIFI_CLIENT_JOURNAL_MAX_MIB", "4096")))
+        {
+            var configuration = UnifiConfiguration.Load();
+            Assert.True(configuration.EnableClientJournal);
+            Assert.Equal(Path.GetFullPath(absolute), configuration.ClientJournalDatabasePath);
+            Assert.Equal(3650, configuration.ClientJournalRetentionDays);
+            Assert.Equal(4096, configuration.ClientJournalMaximumMib);
+        }
+    }
+
+    [Theory]
+    [InlineData("UNIFI_CLIENT_JOURNAL_RETENTION_DAYS", "0")]
+    [InlineData("UNIFI_CLIENT_JOURNAL_RETENTION_DAYS", "3651")]
+    [InlineData("UNIFI_CLIENT_JOURNAL_MAX_MIB", "15")]
+    [InlineData("UNIFI_CLIENT_JOURNAL_MAX_MIB", "4097")]
+    public void Rejects_invalid_client_journal_settings(string name, string value)
+    {
+        var path = Path.Combine(Path.GetTempPath(), "unifi-journal", "client.db");
+        using var environment = new EnvironmentScope(
+            ("UNIFI_API_KEY", "test-key"),
+            ("UNIFI_ENABLE_CLIENT_JOURNAL", "true"),
+            ("UNIFI_CLIENT_JOURNAL_DB_PATH", path),
+            (name, value));
+
+        Assert.Throws<ConfigurationException>(() => UnifiConfiguration.Load());
+    }
+
+    [Fact]
+    public void Rejects_invalid_client_journal_gate()
+    {
+        using var environment = new EnvironmentScope(
+            ("UNIFI_API_KEY", "test-key"),
+            ("UNIFI_ENABLE_CLIENT_JOURNAL", "yes"));
+
+        Assert.Throws<ConfigurationException>(() => UnifiConfiguration.Load());
     }
 }
 
