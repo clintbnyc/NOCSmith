@@ -54,6 +54,7 @@ public sealed class ClientObservationCollectorTests
         Assert.Equal("aa:bb:cc:dd:ee:01", connected.MacAddress);
         Assert.Equal("Laptop token=<redacted>", connected.Name);
         Assert.Equal("online", connected.State);
+        Assert.Equal(1, result.Connected.DuplicateRecordsSuppressed);
         var history = Assert.Single(result.History.Records);
         Assert.Equal("2001:db8::2", history.IpAddress);
         Assert.Equal("historyEvidence", history.State);

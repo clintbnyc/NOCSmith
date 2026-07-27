@@ -230,6 +230,26 @@ public sealed class ClientHistoryReadServiceTests
     }
 
     [Fact]
+    public async Task Duplicate_connected_macs_preserve_existing_suppression_metadata()
+    {
+        var client = new HistoryClient
+        {
+            ConnectedClients = new JsonArray(
+                Connected("aa:bb:cc:dd:ee:01", "First", "192.168.1.1"),
+                Connected("AA:BB:CC:DD:EE:01", "Duplicate", "192.168.1.2"))
+        };
+        var service = CreateService(client);
+
+        var response = await service.ReadAsync(null, 24, 0, 100, CancellationToken.None);
+
+        var data = Assert.IsType<JsonObject>(response.Data);
+        Assert.Single(data["currentlyConnectedClients"]!.AsArray());
+        Assert.Equal(
+            1,
+            data["_connector"]!["connectedDuplicateMacsSuppressed"]!.GetValue<int>());
+    }
+
+    [Fact]
     public async Task Official_hostname_is_retained_when_name_is_unavailable()
     {
         var client = new HistoryClient

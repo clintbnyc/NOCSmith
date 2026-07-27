@@ -87,18 +87,28 @@ public sealed class ClientJournalStore
 
     private readonly UnifiConfiguration _configuration;
     private readonly Action<int>? _beforeMigrationCommit;
+    private readonly Func<string, bool> _isLocalFileSystem;
 
     public ClientJournalStore(UnifiConfiguration configuration)
-        : this(configuration, beforeMigrationCommit: null)
+        : this(configuration, beforeMigrationCommit: null, isLocalFileSystem: null)
     {
     }
 
     internal ClientJournalStore(
         UnifiConfiguration configuration,
         Action<int>? beforeMigrationCommit)
+        : this(configuration, beforeMigrationCommit, isLocalFileSystem: null)
+    {
+    }
+
+    internal ClientJournalStore(
+        UnifiConfiguration configuration,
+        Action<int>? beforeMigrationCommit,
+        Func<string, bool>? isLocalFileSystem)
     {
         _configuration = configuration;
         _beforeMigrationCommit = beforeMigrationCommit;
+        _isLocalFileSystem = isLocalFileSystem ?? IsLocalFileSystem;
     }
 
     public bool Enabled => _configuration.EnableClientJournal;
@@ -155,13 +165,13 @@ public sealed class ClientJournalStore
             if (GetActiveBytes() > MaximumBytes)
             {
                 transaction.Rollback();
-                Checkpoint(connection, truncate: true);
+                _ = Checkpoint(connection, truncate: true);
                 throw new ClientJournalSizeException(
                     "The projected collection could not fit within UNIFI_CLIENT_JOURNAL_MAX_MIB; it was rolled back.");
             }
 
             transaction.Commit();
-            Checkpoint(connection, truncate: false);
+            _ = Checkpoint(connection, truncate: false);
             ApplyPrivateFileModes();
             PruneForSize(connection);
             if (GetActiveBytes() > MaximumBytes)
@@ -315,42 +325,94 @@ public sealed class ClientJournalStore
         return new StoredSnapshot(clients, groups);
     }
 
-    public IReadOnlyList<StoredClientHistoryRow> ReadClientHistory(
-        string macAddress,
-        string? siteId,
-        long? fromMilliseconds,
-        long? toMilliseconds)
+    public IReadOnlyList<string> ReadSiteIds()
     {
         using var connection = OpenValidatedReadOnlyConnection();
         using var command = connection.CreateCommand();
         command.CommandText =
-            @"
-            SELECT c.collection_id, c.site_id, c.completed_at_ms, c.history_hours,
-                   s.source_kind, s.status,
-                   o.client_name, o.ip_address, o.observed_state,
-                   o.connected_at_ms, o.last_seen_at_ms, o.observation_id
-            FROM client_observations o
-            JOIN collections c ON c.collection_id = o.collection_id
-            JOIN collection_sources s
-              ON s.collection_id = o.collection_id AND s.source_kind = o.source_kind
-            WHERE o.mac_address = $mac
-              AND ($site_id IS NULL OR c.site_id = $site_id)
-              AND ($from_ms IS NULL OR c.completed_at_ms >= $from_ms)
-              AND ($to_ms IS NULL OR c.completed_at_ms <= $to_ms)
-            ORDER BY c.completed_at_ms, c.collection_id, s.source_kind;
-            ";
-        command.Parameters.AddWithValue("$mac", macAddress);
-        command.Parameters.AddWithValue("$site_id", (object?)siteId ?? DBNull.Value);
-        command.Parameters.AddWithValue("$from_ms", (object?)fromMilliseconds ?? DBNull.Value);
-        command.Parameters.AddWithValue("$to_ms", (object?)toMilliseconds ?? DBNull.Value);
+            "SELECT DISTINCT site_id FROM collections ORDER BY site_id;";
+        var sites = new List<string>();
+        using var reader = command.ExecuteReader();
+        while (reader.Read())
+        {
+            sites.Add(reader.GetString(0));
+        }
 
-        var pending = new List<(StoredClientHistoryRow Row, long ObservationId)>();
+        return sites;
+    }
+
+    public StoredClientHistoryPage ReadClientHistoryPage(
+        string macAddress,
+        string? siteId,
+        long? fromMilliseconds,
+        long? toMilliseconds,
+        int offset,
+        int limit)
+    {
+        using var connection = OpenValidatedReadOnlyConnection();
+        const string entries =
+            @"
+            WITH history_entries AS (
+                SELECT c.collection_id, c.site_id, c.completed_at_ms, c.history_hours,
+                       s.source_kind, s.status,
+                       o.client_name, o.ip_address, o.observed_state,
+                       o.connected_at_ms, o.last_seen_at_ms, o.observation_id,
+                       0 AS is_group
+                FROM client_observations o
+                JOIN collections c ON c.collection_id = o.collection_id
+                JOIN collection_sources s
+                  ON s.collection_id = o.collection_id AND s.source_kind = o.source_kind
+                WHERE o.mac_address = $mac
+                  AND ($site_id IS NULL OR c.site_id = $site_id)
+                  AND ($from_ms IS NULL OR c.completed_at_ms >= $from_ms)
+                  AND ($to_ms IS NULL OR c.completed_at_ms <= $to_ms)
+                UNION ALL
+                SELECT c.collection_id, c.site_id, c.completed_at_ms, c.history_hours,
+                       s.source_kind, s.status,
+                       NULL, NULL, NULL, NULL, NULL, NULL,
+                       1 AS is_group
+                FROM collections c
+                JOIN collection_sources s
+                  ON s.collection_id = c.collection_id
+                 AND s.source_kind = 'configuredGroups'
+                WHERE ($site_id IS NULL OR c.site_id = $site_id)
+                  AND ($from_ms IS NULL OR c.completed_at_ms >= $from_ms)
+                  AND ($to_ms IS NULL OR c.completed_at_ms <= $to_ms)
+                  AND EXISTS (
+                      SELECT 1
+                      FROM group_memberships m
+                      WHERE m.collection_id = c.collection_id
+                        AND m.mac_address = $mac
+                  )
+            )
+            ";
+        using var count = connection.CreateCommand();
+        count.CommandText = entries + "SELECT count(*) FROM history_entries;";
+        AddHistoryParameters(count, macAddress, siteId, fromMilliseconds, toMilliseconds);
+        var total = Convert.ToInt32(count.ExecuteScalar(), CultureInfo.InvariantCulture);
+
+        using var command = connection.CreateCommand();
+        command.CommandText =
+            entries +
+            @"
+            SELECT collection_id, site_id, completed_at_ms, history_hours,
+                   source_kind, status, client_name, ip_address, observed_state,
+                   connected_at_ms, last_seen_at_ms, observation_id, is_group
+            FROM history_entries
+            ORDER BY completed_at_ms, collection_id, source_kind
+            LIMIT $limit OFFSET $offset;
+            ";
+        AddHistoryParameters(command, macAddress, siteId, fromMilliseconds, toMilliseconds);
+        command.Parameters.AddWithValue("$limit", limit);
+        command.Parameters.AddWithValue("$offset", offset);
+
+        var pending = new List<(StoredClientHistoryEntry Row, long? ObservationId, bool IsGroup)>();
         using (var reader = command.ExecuteReader())
         {
             while (reader.Read())
             {
                 pending.Add((
-                    new StoredClientHistoryRow(
+                    new StoredClientHistoryEntry(
                         reader.GetString(0),
                         reader.GetString(1),
                         reader.GetInt64(2),
@@ -362,17 +424,38 @@ public sealed class ClientJournalStore
                         reader.IsDBNull(8) ? null : reader.GetString(8),
                         reader.IsDBNull(9) ? null : reader.GetInt64(9),
                         reader.IsDBNull(10) ? null : reader.GetInt64(10),
-                        Array.Empty<FieldEvidence>()),
-                    reader.GetInt64(11)));
+                        Array.Empty<FieldEvidence>(),
+                        Array.Empty<StoredGroup>()),
+                    reader.IsDBNull(11) ? null : reader.GetInt64(11),
+                    reader.GetInt32(12) == 1));
             }
         }
 
-        return pending
+        var rows = pending
             .Select(value => value.Row with
             {
-                Provenance = ReadProvenance(connection, value.ObservationId)
+                Provenance = value.ObservationId is null
+                    ? Array.Empty<FieldEvidence>()
+                    : ReadProvenance(connection, value.ObservationId.Value),
+                Groups = value.IsGroup
+                    ? ReadGroupsForMac(connection, value.Row.CollectionId, macAddress)
+                    : Array.Empty<StoredGroup>()
             })
             .ToArray();
+        return new StoredClientHistoryPage(total, rows);
+    }
+
+    private static void AddHistoryParameters(
+        SqliteCommand command,
+        string macAddress,
+        string? siteId,
+        long? fromMilliseconds,
+        long? toMilliseconds)
+    {
+        command.Parameters.AddWithValue("$mac", macAddress);
+        command.Parameters.AddWithValue("$site_id", (object?)siteId ?? DBNull.Value);
+        command.Parameters.AddWithValue("$from_ms", (object?)fromMilliseconds ?? DBNull.Value);
+        command.Parameters.AddWithValue("$to_ms", (object?)toMilliseconds ?? DBNull.Value);
     }
 
     public async Task RecoverAsync(
@@ -511,11 +594,28 @@ public sealed class ClientJournalStore
 
     private void ConfigureWritableConnection(SqliteConnection connection)
     {
+        using (var timeout = connection.CreateCommand())
+        {
+            timeout.CommandText = $"PRAGMA busy_timeout={BusyTimeoutMilliseconds};";
+            timeout.ExecuteNonQuery();
+        }
+
+        using (var journalMode = connection.CreateCommand())
+        {
+            journalMode.CommandText = "PRAGMA journal_mode=WAL;";
+            var selectedMode = Convert.ToString(
+                journalMode.ExecuteScalar(),
+                CultureInfo.InvariantCulture);
+            if (!string.Equals(selectedMode, "wal", StringComparison.OrdinalIgnoreCase))
+            {
+                throw new ClientJournalMigrationException(
+                    "The client journal filesystem did not activate required SQLite WAL mode.");
+            }
+        }
+
         using var command = connection.CreateCommand();
         command.CommandText =
             $@"
-            PRAGMA busy_timeout={BusyTimeoutMilliseconds};
-            PRAGMA journal_mode=WAL;
             PRAGMA foreign_keys=ON;
             PRAGMA synchronous=FULL;
             PRAGMA wal_autocheckpoint=256;
@@ -550,13 +650,14 @@ public sealed class ClientJournalStore
         }
     }
 
-    private static void Checkpoint(SqliteConnection connection, bool truncate)
+    private static bool Checkpoint(SqliteConnection connection, bool truncate)
     {
         using var command = connection.CreateCommand();
         command.CommandText = truncate
             ? "PRAGMA wal_checkpoint(TRUNCATE);"
             : "PRAGMA wal_checkpoint(PASSIVE);";
-        command.ExecuteNonQuery();
+        using var reader = command.ExecuteReader();
+        return reader.Read() && reader.GetInt32(0) == 0;
     }
 
     private void ApplyMigrations(SqliteConnection connection)
@@ -688,9 +789,20 @@ public sealed class ClientJournalStore
         using var wal = connection.CreateCommand();
         wal.CommandText = "PRAGMA journal_mode;";
         var journalMode = Convert.ToString(wal.ExecuteScalar(), CultureInfo.InvariantCulture);
+        if (!string.Equals(journalMode, "wal", StringComparison.OrdinalIgnoreCase))
+        {
+            return JournalInspection.Corrupt(
+                CreateCorruptionFingerprint(),
+                "The active SQLite journal is not using required WAL mode.",
+                _configuration.ClientJournalRetentionDays,
+                _configuration.ClientJournalMaximumMib,
+                GetActiveBytes(),
+                GetQuarantineInventory());
+        }
+
         return JournalInspection.Healthy(
             version,
-            journalMode ?? "unknown",
+            journalMode!,
             _configuration.ClientJournalRetentionDays,
             _configuration.ClientJournalMaximumMib);
     }
@@ -935,6 +1047,11 @@ public sealed class ClientJournalStore
 
     private void PruneForSize(SqliteConnection connection)
     {
+        if (GetActiveBytes() > MaximumBytes)
+        {
+            ReclaimAvailableSpace(connection);
+        }
+
         while (GetActiveBytes() > MaximumBytes)
         {
             using var command = connection.CreateCommand();
@@ -990,10 +1107,36 @@ public sealed class ClientJournalStore
                 break;
             }
 
-            Checkpoint(connection, truncate: true);
-            using var vacuum = connection.CreateCommand();
-            vacuum.CommandText = "PRAGMA incremental_vacuum(256);";
-            vacuum.ExecuteNonQuery();
+            ReclaimAvailableSpace(connection);
+        }
+    }
+
+    private static void ReclaimAvailableSpace(SqliteConnection connection)
+    {
+        if (!Checkpoint(connection, truncate: true))
+        {
+            throw new ClientJournalSizeException(
+                "The journal WAL is pinned by an active reader; size pruning stopped without deleting another collection.");
+        }
+
+        using (var freePages = connection.CreateCommand())
+        {
+            freePages.CommandText = "PRAGMA freelist_count;";
+            var count = Convert.ToInt64(
+                freePages.ExecuteScalar(),
+                CultureInfo.InvariantCulture);
+            if (count > 0)
+            {
+                using var vacuum = connection.CreateCommand();
+                vacuum.CommandText = "PRAGMA incremental_vacuum;";
+                vacuum.ExecuteNonQuery();
+            }
+        }
+
+        if (!Checkpoint(connection, truncate: true))
+        {
+            throw new ClientJournalSizeException(
+                "The journal WAL became pinned while reclaiming free pages; size pruning stopped.");
         }
     }
 
@@ -1068,6 +1211,36 @@ public sealed class ClientJournalStore
             .ToArray();
     }
 
+    private static IReadOnlyList<StoredGroup> ReadGroupsForMac(
+        SqliteConnection connection,
+        string collectionId,
+        string macAddress)
+    {
+        using var command = connection.CreateCommand();
+        command.CommandText =
+            @"
+            SELECT g.group_id, g.group_name
+            FROM group_observations g
+            JOIN group_memberships m
+              ON m.collection_id = g.collection_id AND m.group_id = g.group_id
+            WHERE g.collection_id = $collection AND m.mac_address = $mac
+            ORDER BY g.group_id;
+            ";
+        command.Parameters.AddWithValue("$collection", collectionId);
+        command.Parameters.AddWithValue("$mac", macAddress);
+        var groups = new List<StoredGroup>();
+        using var reader = command.ExecuteReader();
+        while (reader.Read())
+        {
+            groups.Add(new StoredGroup(
+                reader.GetString(0),
+                reader.GetString(1),
+                new[] { macAddress }));
+        }
+
+        return groups;
+    }
+
     private static IReadOnlyList<FieldEvidence> ReadProvenance(
         SqliteConnection connection,
         long observationId)
@@ -1118,6 +1291,7 @@ public sealed class ClientJournalStore
         }
 
         ValidateNoSymlink(parent, isDirectory: true);
+        RequireLocalFileSystem(parent);
         var mode = File.GetUnixFileMode(parent);
         if ((mode & (UnixFileMode.GroupRead |
                      UnixFileMode.GroupWrite |
@@ -1147,6 +1321,7 @@ public sealed class ClientJournalStore
         ValidateNoSymlink(DatabasePath, isDirectory: false);
         var parent = Path.GetDirectoryName(DatabasePath)!;
         ValidateNoSymlink(parent, isDirectory: true);
+        RequireLocalFileSystem(parent);
         var privateBits = UnixFileMode.GroupRead |
             UnixFileMode.GroupWrite |
             UnixFileMode.GroupExecute |
@@ -1180,6 +1355,54 @@ public sealed class ClientJournalStore
             throw new ConfigurationException(
                 "The client journal path and its parent must not be symbolic links.");
         }
+    }
+
+    private void RequireLocalFileSystem(string path)
+    {
+        if (!_isLocalFileSystem(path))
+        {
+            throw new ConfigurationException(
+                "UNIFI_CLIENT_JOURNAL_DB_PATH must be on a local filesystem that supports SQLite WAL.");
+        }
+    }
+
+    private static bool IsLocalFileSystem(string path)
+    {
+        try
+        {
+            var fullPath = Path.GetFullPath(path);
+            var drive = DriveInfo.GetDrives()
+                .Where(value => IsWithinRoot(fullPath, value.RootDirectory.FullName))
+                .OrderByDescending(value => value.RootDirectory.FullName.Length)
+                .FirstOrDefault();
+            return drive is not null &&
+                drive.IsReady &&
+                drive.DriveType is DriveType.Fixed or
+                    DriveType.Removable or
+                    DriveType.Ram;
+        }
+        catch (Exception exception) when (
+            exception is IOException or
+            UnauthorizedAccessException or
+            ArgumentException)
+        {
+            return false;
+        }
+    }
+
+    private static bool IsWithinRoot(string path, string root)
+    {
+        var normalizedRoot = Path.GetFullPath(root)
+            .TrimEnd(Path.DirectorySeparatorChar) +
+            Path.DirectorySeparatorChar;
+        var normalizedPath = Path.GetFullPath(path)
+            .TrimEnd(Path.DirectorySeparatorChar) +
+            Path.DirectorySeparatorChar;
+        return normalizedPath.StartsWith(
+            normalizedRoot,
+            OperatingSystem.IsMacOS()
+                ? StringComparison.OrdinalIgnoreCase
+                : StringComparison.Ordinal);
     }
 
     private void ApplyPrivateFileModes()
@@ -1340,7 +1563,7 @@ public sealed record StoredSnapshot(
     IReadOnlyList<StoredClient> Clients,
     IReadOnlyList<StoredGroup> Groups);
 
-public sealed record StoredClientHistoryRow(
+public sealed record StoredClientHistoryEntry(
     string CollectionId,
     string SiteId,
     long CompletedAtMilliseconds,
@@ -1352,7 +1575,12 @@ public sealed record StoredClientHistoryRow(
     string? State,
     long? ConnectedAtMilliseconds,
     long? LastSeenAtMilliseconds,
-    IReadOnlyList<FieldEvidence> Provenance);
+    IReadOnlyList<FieldEvidence> Provenance,
+    IReadOnlyList<StoredGroup> Groups);
+
+public sealed record StoredClientHistoryPage(
+    int Total,
+    IReadOnlyList<StoredClientHistoryEntry> Rows);
 
 public sealed record HealthCollection(
     string CollectionId,

@@ -182,12 +182,16 @@ public sealed class ClientJournalStoreTests
             groups: CompleteGroups()),
             CancellationToken.None);
 
-        var rows = store.ReadClientHistory(
+        var page = store.ReadClientHistoryPage(
             "aa:bb:cc:dd:ee:01",
             SiteId,
             null,
-            null);
+            null,
+            offset: 0,
+            limit: 100);
+        var rows = page.Rows;
 
+        Assert.Equal(2, page.Total);
         Assert.Equal(new[] { "earlier", "later" }, rows.Select(value => value.CollectionId));
         Assert.All(rows, row => Assert.Equal("officialConnected", row.SourceKind));
         Assert.All(rows, row => Assert.Contains(
@@ -207,6 +211,23 @@ public sealed class ClientJournalStoreTests
 
         await Assert.ThrowsAsync<ConfigurationException>(
             () => store.InitializeAsync(CancellationToken.None));
+    }
+
+    [Fact]
+    public async Task Nonlocal_filesystem_is_rejected_before_database_creation()
+    {
+        using var directory = TemporaryPrivateDirectory.Create();
+        var path = Path.Combine(directory.Path, "journal.db");
+        var store = new ClientJournalStore(
+            Configuration(path, enabled: true),
+            beforeMigrationCommit: null,
+            isLocalFileSystem: _ => false);
+
+        var exception = await Assert.ThrowsAsync<ConfigurationException>(
+            () => store.InitializeAsync(TestContext.Current.CancellationToken));
+
+        Assert.Contains("local filesystem", exception.Message, StringComparison.Ordinal);
+        Assert.False(File.Exists(path));
     }
 
     [Fact]
@@ -421,6 +442,36 @@ public sealed class ClientJournalStoreTests
     }
 
     [Fact]
+    public async Task Non_wal_database_is_unhealthy_until_explicit_write_initialization()
+    {
+        using var directory = TemporaryPrivateDirectory.Create();
+        var path = Path.Combine(directory.Path, "journal.db");
+        var configuration = Configuration(path, enabled: true);
+        var store = new ClientJournalStore(configuration);
+        await store.InitializeAsync(TestContext.Current.CancellationToken);
+        SqliteConnection.ClearAllPools();
+        using (var connection = new SqliteConnection($"Data Source={path}"))
+        {
+            connection.Open();
+            using var command = connection.CreateCommand();
+            command.CommandText = "PRAGMA journal_mode=DELETE;";
+            Assert.Equal(
+                "delete",
+                Convert.ToString(command.ExecuteScalar()),
+                ignoreCase: true);
+        }
+        SetPrivateActiveFiles(path);
+
+        var health = store.Inspect();
+
+        Assert.Equal("corrupt", health.State);
+        Assert.Contains("WAL mode", health.Reason, StringComparison.OrdinalIgnoreCase);
+        await store.InitializeAsync(TestContext.Current.CancellationToken);
+        Assert.Equal("healthy", store.Inspect().State);
+        Assert.Equal("wal", store.Inspect().WalMode, ignoreCase: true);
+    }
+
+    [Fact]
     public async Task Retention_deletes_whole_old_collections()
     {
         using var directory = TemporaryPrivateDirectory.Create();
@@ -548,6 +599,102 @@ public sealed class ClientJournalStoreTests
                 CompleteGroups()),
                 TestContext.Current.CancellationToken));
         Assert.Empty(store.ReadCollections(SiteId));
+    }
+
+    [Fact]
+    public async Task Size_enforcement_reclaims_all_free_pages_before_pruning_collections()
+    {
+        using var directory = TemporaryPrivateDirectory.Create();
+        var path = Path.Combine(directory.Path, "journal.db");
+        var configuration = Configuration(path, enabled: true);
+        var store = new ClientJournalStore(configuration);
+        await store.PersistAsync(Collection(
+            "baseline",
+            DateTimeOffset.Parse("2026-07-26T11:00:00.0000000+00:00"),
+            CompleteClients(Client("aa:bb:cc:dd:ee:01", "One", null)),
+            CompleteHistory(),
+            CompleteGroups()),
+            TestContext.Current.CancellationToken);
+        SqliteConnection.ClearAllPools();
+        using (var connection = new SqliteConnection($"Data Source={path}"))
+        {
+            connection.Open();
+            using var command = connection.CreateCommand();
+            command.CommandText =
+                "PRAGMA max_page_count=10000;" +
+                "CREATE TABLE reclaim_test(payload BLOB);" +
+                "INSERT INTO reclaim_test(payload) VALUES(zeroblob(20971520));" +
+                "DELETE FROM reclaim_test;" +
+                "PRAGMA wal_checkpoint(TRUNCATE);";
+            command.ExecuteNonQuery();
+        }
+        SetPrivateActiveFiles(path);
+        Assert.True(new FileInfo(path).Length > 16L * 1024 * 1024);
+
+        await store.PersistAsync(Collection(
+            "after-reclaim",
+            DateTimeOffset.Parse("2026-07-26T12:00:00.0000000+00:00"),
+            CompleteClients(Client("aa:bb:cc:dd:ee:02", "Two", null)),
+            CompleteHistory(),
+            CompleteGroups()),
+            TestContext.Current.CancellationToken);
+
+        Assert.Equal(
+            new[] { "baseline", "after-reclaim" },
+            store.ReadCollections(SiteId).Select(value => value.CollectionId));
+        Assert.True(store.Inspect().ActiveBytes <= 16L * 1024 * 1024);
+    }
+
+    [Fact]
+    public async Task Pinned_oversized_wal_fails_without_pruning_existing_collection()
+    {
+        using var directory = TemporaryPrivateDirectory.Create();
+        var path = Path.Combine(directory.Path, "journal.db");
+        var configuration = Configuration(path, enabled: true);
+        var store = new ClientJournalStore(configuration);
+        await store.PersistAsync(Collection(
+            "must-survive",
+            DateTimeOffset.Parse("2026-07-26T11:00:00.0000000+00:00"),
+            CompleteClients(Client("aa:bb:cc:dd:ee:01", "One", null)),
+            CompleteHistory(),
+            CompleteGroups()),
+            TestContext.Current.CancellationToken);
+
+        using var reader = new SqliteConnection($"Data Source={path};Mode=ReadOnly");
+        reader.Open();
+        using var readerTransaction = reader.BeginTransaction();
+        Assert.Equal(1L, CountCollections(reader, readerTransaction));
+        using (var writer = new SqliteConnection($"Data Source={path}"))
+        {
+            writer.Open();
+            using var command = writer.CreateCommand();
+            command.CommandText =
+                "PRAGMA max_page_count=10000;" +
+                "CREATE TABLE pinned_padding(payload BLOB);" +
+                "INSERT INTO pinned_padding(payload) VALUES(zeroblob(17825792));";
+            command.ExecuteNonQuery();
+        }
+        SetPrivateActiveFiles(path);
+        Assert.True(new FileInfo(path + "-wal").Length > 16L * 1024 * 1024);
+
+        var exception = await Assert.ThrowsAsync<ClientJournalSizeException>(
+            () => store.PersistAsync(Collection(
+                "must-not-commit",
+                DateTimeOffset.Parse("2026-07-26T12:00:00.0000000+00:00"),
+                CompleteClients(Client("aa:bb:cc:dd:ee:02", "Two", null)),
+                CompleteHistory(),
+                CompleteGroups()),
+                TestContext.Current.CancellationToken));
+
+        Assert.Contains("active reader", exception.Message, StringComparison.Ordinal);
+        Assert.Equal(1L, CountCollections(reader, readerTransaction));
+        readerTransaction.Commit();
+        Assert.Contains(
+            store.ReadCollections(SiteId),
+            value => value.CollectionId == "must-survive");
+        Assert.DoesNotContain(
+            store.ReadCollections(SiteId),
+            value => value.CollectionId == "must-not-commit");
     }
 
     private static UnifiConfiguration Configuration(string path, bool enabled) =>

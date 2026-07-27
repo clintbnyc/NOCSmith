@@ -203,7 +203,7 @@ public sealed partial class ClientHistoryReadService
 
         var connected = new ConnectedReadResult(
             collection.Connected.Records.Select(ToConnectedClient).ToArray(),
-            DuplicateMacCount: 0);
+            collection.Connected.DuplicateRecordsSuppressed);
         var history = collection.History.Records.Select(ToHistoryClient).ToArray();
         var groups = collection.Groups.Records
             .Select(group => new ClientGroup(group.GroupId, group.Name, group.Members))

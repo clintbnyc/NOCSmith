@@ -169,6 +169,7 @@ public sealed partial class ClientObservationCollector
     {
         var records = new List<NormalizedClientObservation>();
         var seenMacs = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        var duplicateMacsSuppressed = 0;
         try
         {
             var contract = _contracts.Current;
@@ -206,6 +207,7 @@ public sealed partial class ClientObservationCollector
                     var mac = ReadMac(source, "macAddress", "official connected-client");
                     if (!seenMacs.Add(mac))
                     {
+                        duplicateMacsSuppressed++;
                         continue;
                     }
 
@@ -235,7 +237,10 @@ public sealed partial class ClientObservationCollector
                 offset += page.Count;
                 if (offset >= total)
                 {
-                    return Complete(ClientObservationSource.OfficialConnected, records);
+                    return Complete(
+                        ClientObservationSource.OfficialConnected,
+                        records,
+                        duplicateMacsSuppressed);
                 }
 
                 if (page.Count == 0)
@@ -259,7 +264,8 @@ public sealed partial class ClientObservationCollector
                 records,
                 SourceErrorCode(exception),
                 "The official connected-client source was unavailable or failed validation.",
-                exception);
+                exception,
+                duplicateMacsSuppressed);
         }
     }
 
@@ -428,8 +434,15 @@ public sealed partial class ClientObservationCollector
 
     private static SourceCollection<T> Complete<T>(
         ClientObservationSource source,
-        IReadOnlyList<T> records) =>
-        new(source, CollectionSourceStatus.Complete, records, null, null);
+        IReadOnlyList<T> records,
+        int duplicateRecordsSuppressed = 0) =>
+        new(
+            source,
+            CollectionSourceStatus.Complete,
+            records,
+            null,
+            null,
+            DuplicateRecordsSuppressed: duplicateRecordsSuppressed);
 
     private static SourceCollection<T> NotAttempted<T>(
         ClientObservationSource source) =>
@@ -445,7 +458,8 @@ public sealed partial class ClientObservationCollector
         IReadOnlyList<T> records,
         string errorCode,
         string errorMessage,
-        Exception exception) =>
+        Exception exception,
+        int duplicateRecordsSuppressed = 0) =>
         new(
             source,
             records.Count == 0 ? CollectionSourceStatus.Failed : CollectionSourceStatus.Partial,
@@ -453,7 +467,8 @@ public sealed partial class ClientObservationCollector
             errorCode,
             errorMessage,
             exception is UnifiApiException api ? (int)api.StatusCode : null,
-            exception is UnifiApiException apiWithCode ? apiWithCode.Code : null);
+            exception is UnifiApiException apiWithCode ? apiWithCode.Code : null,
+            duplicateRecordsSuppressed);
 
     private static long ValidatePage(JsonObject response, JsonArray page, int requestedOffset)
     {

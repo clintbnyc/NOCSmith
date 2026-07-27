@@ -189,7 +189,10 @@ database and fail closed on unknown newer schemas. SQLite runs in WAL mode
 with foreign keys, `synchronous=FULL`, incremental auto-vacuum, a bounded busy
 timeout, separate pooled connections, and a process-local write semaphore.
 Retention and size pruning delete whole collections; the configured active
-DB/WAL/SHM cap takes precedence.
+DB/WAL/SHM cap takes precedence. Before deleting a collection for size, the
+store requires a successful truncating WAL checkpoint and fully reclaims
+already-free pages. If an active reader pins an oversized WAL, collection
+fails closed without deleting another historical collection.
 
 The locked dependency graph uses `Microsoft.Data.Sqlite` 10.0.10 and explicitly
 pins `SQLitePCLRaw.bundle_e_sqlite3` 2.1.12. The explicit native-bundle pin

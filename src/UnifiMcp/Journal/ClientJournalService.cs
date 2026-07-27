@@ -226,39 +226,17 @@ public sealed partial class ClientJournalService
 
         var offset = ValidateOffset(requestedOffset);
         var limit = ValidateLimit(requestedLimit);
-        var collections = _store.ReadCollections();
-        var siteId = ResolveStoredSite(requestedSiteId, collections);
-        var rows = _store.ReadClientHistory(
-                mac,
-                siteId,
-                from?.ToUnixTimeMilliseconds(),
-                to?.ToUnixTimeMilliseconds())
-            .Select(value => new HistoryOutput(
-                value.CompletedAtMilliseconds,
-                value.CollectionId,
-                value.SourceKind,
-                new JsonObject
-                {
-                    ["collectionId"] = value.CollectionId,
-                    ["observedAt"] = ClientJournalValues.Rfc3339(value.CompletedAtMilliseconds),
-                    ["source"] = value.SourceKind,
-                    ["sourceStatus"] = value.SourceStatus,
-                    ["historyHours"] = value.HistoryHours,
-                    ["name"] = value.Name,
-                    ["macAddress"] = mac,
-                    ["ipAddress"] = value.IpAddress,
-                    ["stateEvidence"] = value.State,
-                    ["connectedAt"] = Rfc3339OrNull(value.ConnectedAtMilliseconds),
-                    ["lastSeenAt"] = Rfc3339OrNull(value.LastSeenAtMilliseconds),
-                    ["fieldProvenance"] = Provenance(value.Provenance),
-                    ["gapInferenceAllowed"] = false
-                }))
-            .Concat(ReadGroupHistory(mac, siteId, collections, from, to))
-            .OrderBy(value => value.CompletedAtMilliseconds)
-            .ThenBy(value => value.CollectionId, StringComparer.Ordinal)
-            .ThenBy(value => value.Source, StringComparer.Ordinal)
+        var siteId = ResolveStoredSite(requestedSiteId, _store.ReadSiteIds());
+        var storedPage = _store.ReadClientHistoryPage(
+            mac,
+            siteId,
+            from?.ToUnixTimeMilliseconds(),
+            to?.ToUnixTimeMilliseconds(),
+            offset,
+            limit);
+        var page = storedPage.Rows
+            .Select(value => ToHistoryOutput(value, mac))
             .ToArray();
-        var page = rows.Skip(offset).Take(limit).ToArray();
         var data = new JsonObject
         {
             ["siteId"] = siteId,
@@ -266,12 +244,12 @@ public sealed partial class ClientJournalService
             ["fromTimestamp"] = from?.ToString("O", CultureInfo.InvariantCulture),
             ["toTimestamp"] = to?.ToString("O", CultureInfo.InvariantCulture),
             ["observations"] = new JsonArray(page.Select(value => (JsonNode?)value.Value).ToArray()),
-            ["pagination"] = Pagination(rows.Length, page.Length, offset, limit),
+            ["pagination"] = Pagination(storedPage.Total, page.Length, offset, limit),
             ["semantics"] =
                 "Partial records are positive evidence only. Missing collections or missing rows never imply offline, disconnection, membership removal, or device removal."
         };
         return Task.FromResult(new ToolResponse(
-            $"Found {rows.Length} source-grained observation(s) for {mac}; returned {page.Length}.",
+            $"Found {storedPage.Total} source-grained observation(s) for {mac}; returned {page.Length}.",
             data));
     }
 
@@ -483,50 +461,25 @@ public sealed partial class ClientJournalService
         return !connected.Contains(macAddress);
     }
 
-    private IEnumerable<HistoryOutput> ReadGroupHistory(
-        string mac,
-        string siteId,
-        IReadOnlyList<StoredCollection> collections,
-        DateTimeOffset? from,
-        DateTimeOffset? to)
+    private static HistoryOutput ToHistoryOutput(
+        StoredClientHistoryEntry value,
+        string mac)
     {
         var source = ClientJournalValues.Source(ClientObservationSource.ConfiguredGroups);
-        foreach (var collection in collections
-                     .Where(value => value.SiteId == siteId)
-                     .Where(value => from is null ||
-                         value.CompletedAtMilliseconds >= from.Value.ToUnixTimeMilliseconds())
-                     .Where(value => to is null ||
-                         value.CompletedAtMilliseconds <= to.Value.ToUnixTimeMilliseconds())
-                     .OrderBy(value => value.CompletedAtMilliseconds)
-                     .ThenBy(value => value.CollectionId, StringComparer.Ordinal))
+        if (string.Equals(value.SourceKind, source, StringComparison.Ordinal))
         {
-            var sourceStatus = collection.Sources.FirstOrDefault(value => value.SourceKind == source);
-            if (sourceStatus is null)
-            {
-                continue;
-            }
-
-            var groups = _store.ReadSnapshot(collection.CollectionId, source).Groups
-                .Where(value => value.Members.Contains(mac, StringComparer.OrdinalIgnoreCase))
-                .OrderBy(value => value.GroupId, StringComparer.Ordinal)
-                .ToArray();
-            if (groups.Length == 0)
-            {
-                continue;
-            }
-
-            yield return new HistoryOutput(
-                collection.CompletedAtMilliseconds,
-                collection.CollectionId,
+            return new HistoryOutput(
+                value.CompletedAtMilliseconds,
+                value.CollectionId,
                 source,
                 new JsonObject
                 {
-                    ["collectionId"] = collection.CollectionId,
-                    ["observedAt"] = ClientJournalValues.Rfc3339(collection.CompletedAtMilliseconds),
+                    ["collectionId"] = value.CollectionId,
+                    ["observedAt"] = ClientJournalValues.Rfc3339(value.CompletedAtMilliseconds),
                     ["source"] = source,
-                    ["sourceStatus"] = sourceStatus.Status,
+                    ["sourceStatus"] = value.SourceStatus,
                     ["macAddress"] = mac,
-                    ["groups"] = new JsonArray(groups.Select(group => (JsonNode?)new JsonObject
+                    ["groups"] = new JsonArray(value.Groups.Select(group => (JsonNode?)new JsonObject
                     {
                         ["id"] = group.GroupId,
                         ["name"] = group.Name
@@ -549,6 +502,27 @@ public sealed partial class ClientJournalService
                     ["gapInferenceAllowed"] = false
                 });
         }
+
+        return new HistoryOutput(
+            value.CompletedAtMilliseconds,
+            value.CollectionId,
+            value.SourceKind,
+            new JsonObject
+            {
+                ["collectionId"] = value.CollectionId,
+                ["observedAt"] = ClientJournalValues.Rfc3339(value.CompletedAtMilliseconds),
+                ["source"] = value.SourceKind,
+                ["sourceStatus"] = value.SourceStatus,
+                ["historyHours"] = value.HistoryHours,
+                ["name"] = value.Name,
+                ["macAddress"] = mac,
+                ["ipAddress"] = value.IpAddress,
+                ["stateEvidence"] = value.State,
+                ["connectedAt"] = Rfc3339OrNull(value.ConnectedAtMilliseconds),
+                ["lastSeenAt"] = Rfc3339OrNull(value.LastSeenAtMilliseconds),
+                ["fieldProvenance"] = Provenance(value.Provenance),
+                ["gapInferenceAllowed"] = false
+            });
     }
 
     private string ResolveStoredSite(
@@ -574,6 +548,33 @@ public sealed partial class ClientJournalService
             .OrderBy(value => value, StringComparer.Ordinal)
             .ToArray();
         return sites.Length switch
+        {
+            0 => throw new ClientJournalUnavailableException(
+                "The client journal has no collections."),
+            1 => sites[0],
+            _ => throw new ContractException(
+                "siteId is required because the journal contains more than one site.")
+        };
+    }
+
+    private string ResolveStoredSite(
+        string? requestedSiteId,
+        IReadOnlyList<string> sites)
+    {
+        var candidate = string.IsNullOrWhiteSpace(requestedSiteId)
+            ? _configuration.DefaultSiteId
+            : requestedSiteId.Trim();
+        if (candidate is not null)
+        {
+            if (!Guid.TryParse(candidate, out _))
+            {
+                throw new ContractException("siteId must be a UUID when provided.");
+            }
+
+            return candidate;
+        }
+
+        return sites.Count switch
         {
             0 => throw new ClientJournalUnavailableException(
                 "The client journal has no collections."),
@@ -656,6 +657,7 @@ public sealed partial class ClientJournalService
             ["source"] = ClientJournalValues.Source(source.Source),
             ["status"] = ClientJournalValues.Status(source.Status),
             ["recordCount"] = source.Records.Count,
+            ["duplicateRecordsSuppressed"] = source.DuplicateRecordsSuppressed,
             ["errorCode"] = source.ErrorCode,
             ["errorMessage"] = source.ErrorMessage,
             ["httpStatus"] = source.HttpStatus,
