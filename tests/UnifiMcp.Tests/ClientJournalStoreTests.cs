@@ -49,6 +49,54 @@ public sealed class ClientJournalStoreTests
     }
 
     [Fact]
+    public async Task Latest_collection_query_is_not_limited_by_health_history()
+    {
+        if (OperatingSystem.IsWindows())
+        {
+            return;
+        }
+
+        using var directory = TemporaryPrivateDirectory.Create();
+        var path = Path.Combine(directory.Path, "journal.db");
+        var store = new ClientJournalStore(Configuration(path, enabled: true));
+        var scheduledCompletedAt = DateTimeOffset.Parse("2026-07-27T12:00:00Z");
+        await store.PersistAsync(Collection(
+            "scheduled",
+            scheduledCompletedAt,
+            CompleteClients(),
+            CompleteHistory(),
+            CompleteGroups()),
+            TestContext.Current.CancellationToken);
+
+        const string otherSiteId = "c2c5f1b8-cec7-4c50-9b92-805b73892756";
+        for (var index = 0; index < 10; index++)
+        {
+            await store.PersistAsync(Collection(
+                $"other-{index}",
+                scheduledCompletedAt.AddMinutes(index + 1),
+                CompleteClients(),
+                CompleteHistory(),
+                CompleteGroups(),
+                otherSiteId),
+                TestContext.Current.CancellationToken);
+        }
+
+        await store.PersistAsync(Collection(
+            "other-window",
+            scheduledCompletedAt.AddMinutes(11),
+            CompleteClients(),
+            CompleteHistory(),
+            CompleteGroups(),
+            SiteId,
+            72),
+            TestContext.Current.CancellationToken);
+
+        var completedAtMilliseconds = store.GetLatestCollectionCompletionMilliseconds(SiteId, 24);
+
+        Assert.Equal(scheduledCompletedAt.ToUnixTimeMilliseconds(), completedAtMilliseconds);
+    }
+
+    [Fact]
     public async Task Explicit_initialization_creates_a_missing_private_parent()
     {
         if (OperatingSystem.IsWindows())
@@ -739,11 +787,13 @@ public sealed class ClientJournalStoreTests
         DateTimeOffset timestamp,
         SourceCollection<NormalizedClientObservation> connected,
         SourceCollection<NormalizedClientObservation> history,
-        SourceCollection<NormalizedClientGroup> groups) =>
+        SourceCollection<NormalizedClientGroup> groups,
+        string? siteId = null,
+        int historyHours = 24) =>
         new(
             id,
-            SiteId,
-            24,
+            siteId ?? SiteId,
+            historyHours,
             timestamp.AddSeconds(-1),
             timestamp,
             connected,

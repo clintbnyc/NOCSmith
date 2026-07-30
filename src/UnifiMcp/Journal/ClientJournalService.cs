@@ -102,7 +102,6 @@ public sealed partial class ClientJournalService
                     ["collectionId"] = value.CollectionId,
                     ["siteId"] = value.SiteId,
                     ["completedAt"] = ClientJournalValues.Rfc3339(value.CompletedAtMilliseconds),
-                    ["historyHours"] = value.HistoryHours,
                     ["overallStatus"] = value.OverallStatus
                 }).ToArray()),
             ["sourceSuccessRates"] = new JsonArray(
@@ -259,6 +258,7 @@ public sealed partial class ClientJournalService
         string corruptionFingerprint,
         CancellationToken cancellationToken)
     {
+        using var lease = _store.AcquireCollectionLease();
         await _store.RecoverAsync(corruptionFingerprint, cancellationToken)
             .ConfigureAwait(false);
         var health = _store.Inspect();

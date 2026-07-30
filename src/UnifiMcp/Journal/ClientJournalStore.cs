@@ -311,6 +311,30 @@ public sealed class ClientJournalStore
         }
     }
 
+    internal long GetLatestCollectionCompletionMilliseconds(
+        string? siteId,
+        int historyHours)
+    {
+        RequireEnabled();
+        using var connection = OpenReadOnlyConnection();
+        using var command = connection.CreateCommand();
+        command.CommandText =
+            @"
+            SELECT completed_at_ms
+            FROM collections
+            WHERE ($site_id IS NULL OR site_id = $site_id)
+              AND history_hours = $history_hours
+            ORDER BY completed_at_ms DESC, collection_id DESC
+            LIMIT 1;
+            ";
+        command.Parameters.AddWithValue("$site_id", (object?)siteId ?? DBNull.Value);
+        command.Parameters.AddWithValue("$history_hours", historyHours);
+
+        return command.ExecuteScalar() is long completedAtMilliseconds
+            ? completedAtMilliseconds
+            : 0;
+    }
+
     public IReadOnlyList<StoredCollection> ReadCollections(string? siteId = null)
     {
         using var connection = OpenValidatedReadOnlyConnection();
@@ -861,7 +885,7 @@ public sealed class ClientJournalStore
         {
             command.CommandText =
                 @"
-                SELECT collection_id, site_id, completed_at_ms, history_hours, overall_status
+                SELECT collection_id, site_id, completed_at_ms, overall_status
                 FROM collections
                 ORDER BY completed_at_ms DESC, collection_id DESC
                 LIMIT 10;
@@ -873,8 +897,7 @@ public sealed class ClientJournalStore
                     reader.GetString(0),
                     reader.GetString(1),
                     reader.GetInt64(2),
-                    reader.GetInt32(3),
-                    reader.GetString(4)));
+                    reader.GetString(3)));
             }
         }
 
@@ -1634,7 +1657,6 @@ public sealed record HealthCollection(
     string CollectionId,
     string SiteId,
     long CompletedAtMilliseconds,
-    int HistoryHours,
     string OverallStatus);
 
 public sealed record SourceSuccessRate(

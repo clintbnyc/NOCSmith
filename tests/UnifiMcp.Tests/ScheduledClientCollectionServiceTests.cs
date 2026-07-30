@@ -44,30 +44,6 @@ public sealed class ScheduledClientCollectionServiceTests
     }
 
     [Fact]
-    public void Startup_delay_uses_only_the_scheduled_site_and_history_window()
-    {
-        var now = DateTimeOffset.Parse("2026-07-27T12:00:00Z");
-        const string scheduledSiteId = "6cc5f1b8-cec7-4c50-9b92-805b73892756";
-        var lastCompletedAt = ScheduledCollectionPlanner.LastCompletionMilliseconds(
-            new[]
-            {
-                new HealthCollection("other-site", "c2c5f1b8-cec7-4c50-9b92-805b73892756", now.AddMinutes(-15).ToUnixTimeMilliseconds(), 24, "complete"),
-                new HealthCollection("other-window", scheduledSiteId, now.AddMinutes(-10).ToUnixTimeMilliseconds(), 72, "complete"),
-                new HealthCollection("scheduled", scheduledSiteId, now.AddMinutes(-61).ToUnixTimeMilliseconds(), 24, "complete")
-            },
-            scheduledSiteId,
-            24);
-
-        var delay = ScheduledCollectionPlanner.DelayUntilDue(
-            DateTimeOffset.FromUnixTimeMilliseconds(lastCompletedAt),
-            now,
-            TimeSpan.FromHours(1));
-
-        Assert.Equal(now.AddMinutes(-61).ToUnixTimeMilliseconds(), lastCompletedAt);
-        Assert.Equal(TimeSpan.Zero, delay);
-    }
-
-    [Fact]
     public void Startup_inspection_failure_defers_to_the_normal_retry_interval()
     {
         var configuration = new UnifiConfiguration(

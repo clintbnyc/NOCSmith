@@ -32,6 +32,28 @@ public sealed class ClientJournalServiceTests
     }
 
     [Fact]
+    public async Task Recovery_respects_the_cross_process_collection_lease()
+    {
+        if (OperatingSystem.IsWindows())
+        {
+            return;
+        }
+
+        using var directory = TemporaryPrivateDirectory.Create();
+        var path = Path.Combine(directory.Path, "journal.db");
+        File.WriteAllText(path, "not a sqlite database");
+        File.SetUnixFileMode(path, UnixFileMode.UserRead | UnixFileMode.UserWrite);
+        var configuration = Configuration(path);
+        var store = new ClientJournalStore(configuration);
+        var service = new ClientJournalService(configuration, null!, store);
+        var fingerprint = store.Inspect().CorruptionFingerprint!;
+        using var lease = store.AcquireCollectionLease();
+
+        await Assert.ThrowsAsync<ClientCollectionInProgressException>(
+            () => service.RecoverAsync(fingerprint, TestContext.Current.CancellationToken));
+    }
+
+    [Fact]
     public async Task Changes_use_only_complete_source_baselines_and_are_deterministic()
     {
         using var directory = TemporaryPrivateDirectory.Create();
