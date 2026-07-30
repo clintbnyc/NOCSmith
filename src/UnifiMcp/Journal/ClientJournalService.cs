@@ -33,8 +33,8 @@ public sealed partial class ClientJournalService
     public JsonObject Describe() => new()
     {
         ["enabled"] = _configuration.EnableClientJournal,
-        ["automaticCollection"] = false,
-        ["createsAtStartup"] = false,
+        ["automaticCollection"] = _configuration.EnableScheduledCollection,
+        ["createsAtStartup"] = _configuration.EnableScheduledCollection,
         ["rawControllerResponsesStored"] = false,
         ["databaseEncryption"] = false,
         ["retentionDays"] = _configuration.ClientJournalRetentionDays,

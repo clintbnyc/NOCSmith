@@ -10,6 +10,27 @@ public sealed class ClientJournalServiceTests
     private static readonly DateTimeOffset Start =
         DateTimeOffset.Parse("2026-07-26T10:00:00.0000000+00:00");
 
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public void Describe_reports_scheduled_collection_side_effects(bool scheduledCollectionEnabled)
+    {
+        var configuration = Configuration("/private/tmp/client-journal.db") with
+        {
+            EnableScheduledCollection = scheduledCollectionEnabled
+        };
+        var service = new ClientJournalService(configuration, null!, null!);
+
+        var description = service.Describe();
+
+        Assert.Equal(
+            scheduledCollectionEnabled,
+            description["automaticCollection"]!.GetValue<bool>());
+        Assert.Equal(
+            scheduledCollectionEnabled,
+            description["createsAtStartup"]!.GetValue<bool>());
+    }
+
     [Fact]
     public async Task Changes_use_only_complete_source_baselines_and_are_deterministic()
     {
