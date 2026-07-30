@@ -8,6 +8,10 @@ It does not use the stopped `/srv/unifi` Docker rollback stack, controller datab
 
 ## Security model
 
+See [`SECURITY.md`](SECURITY.md) for the repository-scoped threat model,
+trust boundaries, attacker capabilities, security invariants, and severity
+calibration used during security reviews.
+
 - Local authentication is an official Network Integration API key sent only to the configured local HTTPS endpoint as `X-API-Key`. Optional Site Manager authentication uses a separate read-only API key sent only to `https://api.ui.com`.
 - The local stdio API key stays in a 1Password Environment exposed through a locally mounted `.env` file. 1Password supplies those contents on demand without storing plaintext values on the Mac.
 - The unattended Pinode container uses a separately protected `0600` environment file under `/srv/unifi-mcp/secrets`. This is an explicit at-rest secret handoff on Pinode; it is excluded from Git and Docker build context, and Compose never publishes its contents.
