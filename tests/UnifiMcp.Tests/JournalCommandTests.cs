@@ -14,7 +14,7 @@ public sealed class JournalCommandTests
         {
             "collect",
             "--site-id",
-            "6cc5f1b8-cec7-4c50-9b92-805b73892756",
+            "6CC5F1B8-CEC7-4C50-9B92-805B73892756",
             "--history-hours",
             "72"
         });

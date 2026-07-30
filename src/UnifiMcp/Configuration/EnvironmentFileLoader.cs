@@ -26,6 +26,7 @@ public static class EnvironmentFileLoader
         "UNIFI_MCP_TAILSCALE_ALLOWED_USERS",
         "UNIFI_MCP_HTTP_PUBLIC_URL",
         "UNIFI_MCP_HTTP_LISTEN_URL",
+        "UNIFI_MCP_TAILSCALE_SOCKET_PATH",
         "UNIFI_SITE_API_KEY",
         "UNIFI_SITE_MANAGER_LOCAL_HOST_ID"
     };

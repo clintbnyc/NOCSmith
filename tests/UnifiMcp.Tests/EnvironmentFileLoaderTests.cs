@@ -25,6 +25,7 @@ public sealed class EnvironmentFileLoaderTests
         "UNIFI_MCP_TAILSCALE_ALLOWED_USERS",
         "UNIFI_MCP_HTTP_PUBLIC_URL",
         "UNIFI_MCP_HTTP_LISTEN_URL",
+        "UNIFI_MCP_TAILSCALE_SOCKET_PATH",
         "UNIFI_SITE_API_KEY",
         "UNIFI_SITE_MANAGER_LOCAL_HOST_ID",
         "UNRELATED_VARIABLE"
@@ -53,6 +54,7 @@ public sealed class EnvironmentFileLoaderTests
             "UNIFI_MCP_TAILSCALE_ALLOWED_USERS=clint@example.test\n" +
             "UNIFI_MCP_HTTP_PUBLIC_URL=https://unifi-mcp.example.test/mcp\n" +
             "UNIFI_MCP_HTTP_LISTEN_URL=http://0.0.0.0:8080\n" +
+            "UNIFI_MCP_TAILSCALE_SOCKET_PATH=/var/run/unifi-mcp/mcp.sock\n" +
             "UNIFI_SITE_API_KEY=site-manager-key\n" +
             "UNIFI_SITE_MANAGER_LOCAL_HOST_ID=host:123\n" +
             "UNRELATED_VARIABLE=must-not-be-imported\n");
@@ -80,6 +82,9 @@ public sealed class EnvironmentFileLoaderTests
         Assert.Equal(
             "https://unifi-mcp.example.test/mcp",
             Environment.GetEnvironmentVariable("UNIFI_MCP_HTTP_PUBLIC_URL"));
+        Assert.Equal(
+            "/var/run/unifi-mcp/mcp.sock",
+            Environment.GetEnvironmentVariable("UNIFI_MCP_TAILSCALE_SOCKET_PATH"));
         Assert.Equal("site-manager-key", Environment.GetEnvironmentVariable("UNIFI_SITE_API_KEY"));
         Assert.Equal("host:123", Environment.GetEnvironmentVariable("UNIFI_SITE_MANAGER_LOCAL_HOST_ID"));
         Assert.Null(Environment.GetEnvironmentVariable("UNRELATED_VARIABLE"));

@@ -79,11 +79,12 @@ public static class JournalCommand
             {
                 case "--site-id":
                     siteId = ReadValue(args, ref index, "--site-id");
-                    if (!Guid.TryParse(siteId, out _))
+                    if (!Guid.TryParse(siteId, out var parsedSiteId))
                     {
                         throw new ConfigurationException("--site-id must be a UUID.");
                     }
 
+                    siteId = parsedSiteId.ToString("D");
                     break;
                 case "--history-hours":
                     var historyText = ReadValue(args, ref index, "--history-hours");
