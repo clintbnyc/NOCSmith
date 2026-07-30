@@ -85,7 +85,7 @@ public sealed class McpHttpSecurityMiddlewareTests
     }
 
     [Fact]
-    public async Task Allows_an_allowlisted_tailscale_identity_from_loopback()
+    public async Task Allows_an_allowlisted_tailscale_identity_from_the_private_unix_socket()
     {
         var nextCalled = false;
         var middleware = new McpHttpSecurityMiddleware(
@@ -95,7 +95,7 @@ public sealed class McpHttpSecurityMiddlewareTests
                 return Task.CompletedTask;
             },
             TailscaleConfiguration());
-        var context = TailscaleContext("clint@example.test", IPAddress.Loopback);
+        var context = TailscaleContext("clint@example.test", null);
 
         await middleware.InvokeAsync(context);
 
@@ -104,17 +104,20 @@ public sealed class McpHttpSecurityMiddlewareTests
     }
 
     [Theory]
-    [InlineData("other@example.test", "127.0.0.1")]
+    [InlineData("other@example.test", null)]
+    [InlineData("clint@example.test", "127.0.0.1")]
     [InlineData("clint@example.test", "172.17.0.1")]
-    [InlineData("", "127.0.0.1")]
+    [InlineData("", null)]
     public async Task Rejects_untrusted_tailscale_identity_or_proxy(
         string login,
-        string remoteAddress)
+        string? remoteAddress)
     {
         var middleware = new McpHttpSecurityMiddleware(
             _ => throw new InvalidOperationException("Request must not pass."),
             TailscaleConfiguration());
-        var context = TailscaleContext(login, IPAddress.Parse(remoteAddress));
+        var context = TailscaleContext(
+            login,
+            remoteAddress is null ? null : IPAddress.Parse(remoteAddress));
 
         await middleware.InvokeAsync(context);
 
@@ -143,11 +146,12 @@ public sealed class McpHttpSecurityMiddlewareTests
                 new[] { "clint@example.test" },
                 StringComparer.OrdinalIgnoreCase),
             McpHttpPublicUri: PublicUri,
-            McpHttpListenUri: new Uri("http://127.0.0.1:8080/"));
+            McpHttpListenUri: new Uri("http://127.0.0.1:8080/"),
+            McpHttpTailscaleSocketPath: "/var/run/unifi-mcp/mcp.sock");
 
     private static DefaultHttpContext TailscaleContext(
         string login,
-        IPAddress remoteAddress)
+        IPAddress? remoteAddress)
     {
         var context = new DefaultHttpContext();
         context.Connection.RemoteIpAddress = remoteAddress;

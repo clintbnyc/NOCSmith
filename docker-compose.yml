@@ -32,9 +32,10 @@ services:
       UNIFI_MCP_HTTP_AUTH_MODE: tailscale
       UNIFI_MCP_TAILSCALE_ALLOWED_USERS: clint@webbman.nyc
       UNIFI_MCP_HTTP_PUBLIC_URL: https://unifi-mcp.nutria-newton.ts.net/mcp
-      UNIFI_MCP_HTTP_LISTEN_URL: http://127.0.0.1:11085
+      UNIFI_MCP_TAILSCALE_SOCKET_PATH: /var/run/unifi-mcp/mcp.sock
     volumes:
       - ./data:/var/lib/unifi-mcp
+      - ./run:/var/run/unifi-mcp
       - /etc/ssl/certs/ca-certificates.crt:/etc/ssl/certs/ca-certificates.crt:ro
     tmpfs:
       - /tmp:rw,noexec,nosuid,size=16m,mode=1777

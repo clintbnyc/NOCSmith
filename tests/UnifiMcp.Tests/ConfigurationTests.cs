@@ -27,6 +27,7 @@ public sealed class ConfigurationTests
             ("UNIFI_MCP_TAILSCALE_ALLOWED_USERS", null),
             ("UNIFI_MCP_HTTP_PUBLIC_URL", null),
             ("UNIFI_MCP_HTTP_LISTEN_URL", null),
+            ("UNIFI_MCP_TAILSCALE_SOCKET_PATH", null),
             ("UNIFI_SITE_API_KEY", null),
             ("UNIFI_SITE_MANAGER_LOCAL_HOST_ID", null));
 
@@ -296,7 +297,7 @@ public sealed class ConfigurationTests
     }
 
     [Fact]
-    public void Tailscale_http_auth_requires_loopback_and_an_explicit_user_allowlist()
+    public void Tailscale_http_auth_requires_a_private_unix_socket_and_an_explicit_user_allowlist()
     {
         using (new EnvironmentScope(
                    ("UNIFI_API_KEY", "test-key"),
@@ -316,7 +317,8 @@ public sealed class ConfigurationTests
                    ("UNIFI_MCP_TAILSCALE_ALLOWED_USERS", "clint@example.test,other@example.test"),
                    ("UNIFI_MCP_HTTP_BEARER_TOKEN", null),
                    ("UNIFI_MCP_HTTP_PUBLIC_URL", "https://unifi-mcp.example.test/mcp"),
-                   ("UNIFI_MCP_HTTP_LISTEN_URL", "http://127.0.0.1:8080")))
+                   ("UNIFI_MCP_HTTP_LISTEN_URL", "http://127.0.0.1:8080"),
+                   ("UNIFI_MCP_TAILSCALE_SOCKET_PATH", "/var/run/unifi-mcp/mcp.sock")))
         {
             var configuration = UnifiConfiguration.Load();
             configuration.RequireHttpServerConfiguration();
@@ -326,7 +328,26 @@ public sealed class ConfigurationTests
             Assert.Contains(
                 "CLINT@EXAMPLE.TEST",
                 configuration.McpHttpTailscaleAllowedUsers!);
+            Assert.Equal(
+                "/var/run/unifi-mcp/mcp.sock",
+                configuration.McpHttpTailscaleSocketPath);
         }
+    }
+
+    [Fact]
+    public void Canonicalizes_configured_site_uuids()
+    {
+        using var environment = new EnvironmentScope(
+            ("UNIFI_API_KEY", "test-key"),
+            ("UNIFI_DEFAULT_SITE_ID", "6CC5F1B8-CEC7-4C50-9B92-805B73892756"),
+            ("UNIFI_SCHEDULED_COLLECTION_SITE_ID", "6CC5F1B8-CEC7-4C50-9B92-805B73892756"));
+
+        var configuration = UnifiConfiguration.Load();
+
+        Assert.Equal("6cc5f1b8-cec7-4c50-9b92-805b73892756", configuration.DefaultSiteId);
+        Assert.Equal(
+            "6cc5f1b8-cec7-4c50-9b92-805b73892756",
+            configuration.ScheduledCollectionSiteId);
     }
 
     [Theory]

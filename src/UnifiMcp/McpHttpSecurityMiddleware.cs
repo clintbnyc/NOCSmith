@@ -1,4 +1,3 @@
-using System.Net;
 using System.Net.Http.Headers;
 using System.Security.Cryptography;
 using System.Text;
@@ -75,7 +74,7 @@ public sealed class McpHttpSecurityMiddleware
         if (_configuration.HttpAuthenticationMode ==
             McpHttpAuthenticationMode.Tailscale)
         {
-            return IPAddress.IsLoopback(context.Connection.RemoteIpAddress ?? IPAddress.None) &&
+            return context.Connection.RemoteIpAddress is null &&
                 context.Request.Headers.TryGetValue(
                     "Tailscale-User-Login",
                     out var loginValues) &&

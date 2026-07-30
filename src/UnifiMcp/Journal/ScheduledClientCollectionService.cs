@@ -1,5 +1,6 @@
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
+using UnifiMcp.Api;
 using UnifiMcp.Configuration;
 using UnifiMcp.Security;
 
@@ -8,6 +9,7 @@ namespace UnifiMcp.Journal;
 public sealed class ScheduledClientCollectionService : BackgroundService
 {
     private readonly UnifiConfiguration _configuration;
+    private readonly SiteResolver _siteResolver;
     private readonly ClientJournalService _journal;
     private readonly ClientJournalStore _store;
     private readonly SecretRedactor _redactor;
@@ -16,6 +18,7 @@ public sealed class ScheduledClientCollectionService : BackgroundService
 
     public ScheduledClientCollectionService(
         UnifiConfiguration configuration,
+        SiteResolver siteResolver,
         ClientJournalService journal,
         ClientJournalStore store,
         SecretRedactor redactor,
@@ -23,6 +26,7 @@ public sealed class ScheduledClientCollectionService : BackgroundService
         ILogger<ScheduledClientCollectionService> logger)
     {
         _configuration = configuration;
+        _siteResolver = siteResolver;
         _journal = journal;
         _store = store;
         _redactor = redactor;
@@ -42,7 +46,7 @@ public sealed class ScheduledClientCollectionService : BackgroundService
             "Scheduled client collection enabled every {IntervalMinutes} minute(s).",
             _configuration.ScheduledCollectionIntervalMinutes);
 
-        var initialDelay = GetInitialDelayOrRetry();
+        var initialDelay = await GetInitialDelayOrRetryAsync(stoppingToken).ConfigureAwait(false);
         if (initialDelay > TimeSpan.Zero)
         {
             await Task.Delay(initialDelay, _timeProvider, stoppingToken).ConfigureAwait(false);
@@ -88,11 +92,15 @@ public sealed class ScheduledClientCollectionService : BackgroundService
         }
     }
 
-    internal TimeSpan GetInitialDelayOrRetry()
+    internal async Task<TimeSpan> GetInitialDelayOrRetryAsync(CancellationToken cancellationToken)
     {
         try
         {
-            return GetInitialDelay();
+            return await GetInitialDelayAsync(cancellationToken).ConfigureAwait(false);
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+            throw;
         }
         catch (Exception exception)
         {
@@ -103,7 +111,7 @@ public sealed class ScheduledClientCollectionService : BackgroundService
         }
     }
 
-    private TimeSpan GetInitialDelay()
+    private async Task<TimeSpan> GetInitialDelayAsync(CancellationToken cancellationToken)
     {
         var inspection = _store.Inspect();
         if (inspection.State is "disabled" or "notInitialized" or "migrationRequired")
@@ -122,6 +130,12 @@ public sealed class ScheduledClientCollectionService : BackgroundService
         var scheduledSiteId = string.IsNullOrWhiteSpace(_configuration.ScheduledCollectionSiteId)
             ? _configuration.DefaultSiteId
             : _configuration.ScheduledCollectionSiteId;
+        if (scheduledSiteId is null)
+        {
+            scheduledSiteId = await _siteResolver
+                .ResolveAsync(null, cancellationToken)
+                .ConfigureAwait(false);
+        }
         var lastCompletedAt = _store.GetLatestCollectionCompletionMilliseconds(
             scheduledSiteId,
             _configuration.ScheduledCollectionHistoryHours);

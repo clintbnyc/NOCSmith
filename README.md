@@ -13,7 +13,7 @@ It does not use the stopped `/srv/unifi` Docker rollback stack, controller datab
 - The unattended Pinode container uses a separately protected `0600` environment file under `/srv/unifi-mcp/secrets`. This is an explicit at-rest secret handoff on Pinode; it is excluded from Git and Docker build context, and Compose never publishes its contents.
 - The connector parses the mounted file itself when launched with `--env-file`. It imports only its supported `UNIFI_*` variables, does not execute the file as shell code, and does not override variables explicitly inherited from the parent process.
 - Neither transport stores the API key in the repository or Codex configuration. The connector never reads macOS Keychain directly.
-- Streamable HTTP defaults to bearer authentication. The Pinode profile instead trusts a `Tailscale-User-Login` header only from a loopback peer and only for an explicit identity allowlist. Tailscale Serve strips caller-supplied identity headers, injects the authenticated tailnet identity, and is the only process allowed to reach this loopback origin.
+- Streamable HTTP defaults to bearer authentication. The Pinode profile trusts `Tailscale-User-Login` only on a Unix socket inside a `0700` directory owned by the non-root container user. Tailscale Serve runs as root, injects the authenticated tailnet identity, and can connect to that socket; unprivileged local host processes cannot. Tailscale 1.98.9 or newer is required because it restricts Unix-socket Serve targets to root.
 - HTTP requests must use the configured public `Host`; a supplied `Origin` must match the same HTTPS authority. MCP responses are marked `Cache-Control: no-store`.
 - HTTPS uses the platform/.NET trust store plus hostname validation. Local stdio uses `unifi.nutria-newton.ts.net`; the Pinode container uses the LAN certificate name `unifi.webbman.nyc` and mounts Pinode's trusted CA bundle read-only. There is no certificate-validation override and no direct-IP fallback.
 - Every normal API operation must exist in the loaded OpenAPI contract. Optional private access is separately constrained to GET `stat/device`, GET `v2/api/site/{site}/clients/active?includeTrafficUsage=true&includeUnifiDevices=true`, GET `v2/api/site/{site}/clients/history?onlyNonBlocked=true&includeUnifiDevices=true&withinHours={bounded-value}`, GET `v2/api/site/{site}/network-members-groups`, and an empty-body query-style POST to `v2/api/site/{site}/system-log/all`. The System Logs POST is a read operation used by Network 10.4.57 and accepts no caller-supplied body. The history GET accepts only the six time-bounded values used by the authenticated Network 10.4.57 UI. Arbitrary private URLs, methods, query keys, and writes are rejected.
@@ -52,6 +52,7 @@ UNIFI_ENABLE_SCHEDULED_COLLECTION=false
 # UNIFI_MCP_TAILSCALE_ALLOWED_USERS=clint@example.com
 # UNIFI_MCP_HTTP_PUBLIC_URL=https://unifi-mcp.example.com/mcp
 # UNIFI_MCP_HTTP_LISTEN_URL=http://0.0.0.0:8080
+# UNIFI_MCP_TAILSCALE_SOCKET_PATH=/absolute/private/directory/unifi-mcp.sock
 UNIFI_SITE_API_KEY=<optional Site Manager API key>
 UNIFI_SITE_MANAGER_LOCAL_HOST_ID=<optional explicit host ID>
 ```
@@ -276,8 +277,8 @@ Run the live diagnostic without printing secrets:
 The tracked Compose profile builds a multi-stage ARM64-compatible image from
 digest-pinned .NET 10 SDK and ASP.NET runtime images. The runtime is non-root,
 read-only, drops every Linux capability, enables `no-new-privileges`, and uses
-the Linux host network only so it can bind the Pinode loopback address directly.
-It does not publish a Docker port to the LAN. The container reaches UniFi
+a private Unix socket for the Tailscale Serve backend. It does not publish a
+Docker port to the LAN. The container reaches UniFi
 through `https://unifi.webbman.nyc` on the LAN and mounts Pinode's existing
 system CA bundle read-only so normal certificate and hostname validation remain
 enabled.
@@ -287,6 +288,7 @@ Prepare the state and secret paths on Pinode:
 ```sh
 cd /srv/unifi-mcp
 sudo install -d -m 0700 -o 1654 -g 1654 data
+sudo install -d -m 0700 -o 1654 -g 1654 run
 sudo install -d -m 0700 -o admin -g admin secrets
 sudo install -m 0600 -o admin -g admin /dev/null \
   secrets/unifi-mcp.env
@@ -310,11 +312,12 @@ sudo docker compose up -d
 
 The dedicated Tailscale Service is `svc:unifi-mcp`. Its policy grants
 `group:network-admins` TCP 443 access and permits only `tag:pinode` to advertise
-it. Pinode terminates HTTPS and proxies the Service to the loopback origin:
+it. Pinode terminates HTTPS and proxies the Service to the private Unix socket.
+Use Tailscale 1.98.9 or newer, and configure Serve as root:
 
 ```sh
 sudo tailscale serve --yes --service=svc:unifi-mcp --https=443 \
-  http://127.0.0.1:11085
+  unix:/srv/unifi-mcp/run/mcp.sock
 ```
 
 The production MCP URL is:
@@ -328,13 +331,14 @@ Tailscale identity. Add another identity deliberately to
 `UNIFI_MCP_TAILSCALE_ALLOWED_USERS`; do not replace the allowlist with a
 wildcard.
 
-Verify the container, loopback boundary, MCP handshake, scheduled journal, and
+Verify the container, socket boundary, MCP handshake, scheduled journal, and
 Service readiness:
 
 ```sh
 sudo docker inspect unifi-mcp \
   --format 'running={{.State.Running}} status={{.State.Status}}'
-ss -lnt | grep '127.0.0.1:11085'
+sudo stat -c '%a %u:%g %F' run
+sudo test -S run/mcp.sock
 sudo docker compose logs --since 10m unifi-mcp
 sudo tailscale serve status --json
 sudo docker exec unifi-mcp \
@@ -343,9 +347,10 @@ sudo docker exec unifi-mcp \
 
 The final command is an explicit extra collection and is therefore optional
 during routine checks. Successful HTTPS MCP initialization from an allowlisted
-tailnet user is the end-to-end acceptance test. A request without an injected
-Tailscale identity returns `401`; a mismatched `Host` or `Origin` returns
-`403`.
+tailnet user is the end-to-end acceptance test. A local TCP request cannot
+reach the application because it has no TCP listener; a request without an
+injected Tailscale identity returns `401`, and a mismatched `Host` or `Origin`
+returns `403`.
 
 Codex uses the Streamable HTTP endpoint directly:
 

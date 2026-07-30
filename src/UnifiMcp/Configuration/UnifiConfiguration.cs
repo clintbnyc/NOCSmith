@@ -1,5 +1,4 @@
 using System.Globalization;
-using System.Net;
 
 namespace UnifiMcp.Configuration;
 
@@ -24,6 +23,7 @@ public sealed record UnifiConfiguration(
     IReadOnlySet<string>? McpHttpTailscaleAllowedUsers = null,
     Uri? McpHttpPublicUri = null,
     Uri? McpHttpListenUri = null,
+    string? McpHttpTailscaleSocketPath = null,
     bool IsScheduledCollectionHost = false)
 {
     public const string DefaultBaseUrl = "https://unifi.nutria-newton.ts.net/proxy/network/integration";
@@ -92,11 +92,7 @@ public sealed record UnifiConfiguration(
                 "UNIFI_SITE_MANAGER_LOCAL_HOST_ID must be an opaque host ID of at most 512 characters without control characters.");
         }
 
-        var defaultSiteId = Environment.GetEnvironmentVariable("UNIFI_DEFAULT_SITE_ID")?.Trim();
-        if (!string.IsNullOrEmpty(defaultSiteId) && !Guid.TryParse(defaultSiteId, out _))
-        {
-            throw new ConfigurationException("UNIFI_DEFAULT_SITE_ID must be a UUID when set.");
-        }
+        var defaultSiteId = ReadOptionalUuid("UNIFI_DEFAULT_SITE_ID");
 
         var timeout = TimeSpan.FromSeconds(30);
         var timeoutText = Environment.GetEnvironmentVariable("UNIFI_TIMEOUT_SECONDS")?.Trim();
@@ -165,14 +161,8 @@ public sealed record UnifiConfiguration(
             defaultValue: 60,
             minimum: 5,
             maximum: 1440);
-        var scheduledCollectionSiteId = NullIfWhiteSpace(
-            Environment.GetEnvironmentVariable("UNIFI_SCHEDULED_COLLECTION_SITE_ID"));
-        if (scheduledCollectionSiteId is not null &&
-            !Guid.TryParse(scheduledCollectionSiteId, out _))
-        {
-            throw new ConfigurationException(
-                "UNIFI_SCHEDULED_COLLECTION_SITE_ID must be a UUID when set.");
-        }
+        var scheduledCollectionSiteId = ReadOptionalUuid(
+            "UNIFI_SCHEDULED_COLLECTION_SITE_ID");
 
         var scheduledCollectionHistoryHours = ReadBoundedInteger(
             "UNIFI_SCHEDULED_COLLECTION_HISTORY_HOURS",
@@ -223,6 +213,9 @@ public sealed record UnifiConfiguration(
                 DefaultMcpHttpListenUrl,
             requireHttps: false,
             requiredPath: "/");
+        var mcpHttpTailscaleSocketPath = ReadUnixSocketPath(
+            "UNIFI_MCP_TAILSCALE_SOCKET_PATH",
+            Environment.GetEnvironmentVariable("UNIFI_MCP_TAILSCALE_SOCKET_PATH"));
 
         return new UnifiConfiguration(
             baseUri,
@@ -244,7 +237,8 @@ public sealed record UnifiConfiguration(
             mcpHttpBearerToken,
             mcpHttpTailscaleAllowedUsers,
             mcpHttpPublicUri,
-            mcpHttpListenUri);
+            mcpHttpListenUri,
+            mcpHttpTailscaleSocketPath);
     }
 
     public bool SiteManagerConfigured => !string.IsNullOrWhiteSpace(SiteManagerApiKey);
@@ -276,13 +270,16 @@ public sealed record UnifiConfiguration(
                     "UNIFI_MCP_TAILSCALE_ALLOWED_USERS is required when UNIFI_MCP_HTTP_AUTH_MODE=tailscale.");
             }
 
-            if (McpHttpListenUri is null ||
-                !IPAddress.TryParse(McpHttpListenUri.Host, out var listenAddress) ||
-                !IPAddress.IsLoopback(listenAddress))
+            if (string.IsNullOrWhiteSpace(McpHttpTailscaleSocketPath))
             {
                 throw new ConfigurationException(
-                    "Tailscale identity authentication requires UNIFI_MCP_HTTP_LISTEN_URL to use an explicit loopback IP address.");
+                    "Tailscale identity authentication requires UNIFI_MCP_TAILSCALE_SOCKET_PATH to use a private Unix socket.");
             }
+        }
+        else if (!string.IsNullOrWhiteSpace(McpHttpTailscaleSocketPath))
+        {
+            throw new ConfigurationException(
+                "UNIFI_MCP_TAILSCALE_SOCKET_PATH is allowed only when UNIFI_MCP_HTTP_AUTH_MODE=tailscale.");
         }
     }
 
@@ -328,6 +325,39 @@ public sealed record UnifiConfiguration(
         }
 
         return users;
+    }
+
+    private static string? ReadOptionalUuid(string name)
+    {
+        var text = NullIfWhiteSpace(Environment.GetEnvironmentVariable(name));
+        if (text is null)
+        {
+            return null;
+        }
+
+        if (!Guid.TryParse(text, out var value))
+        {
+            throw new ConfigurationException($"{name} must be a UUID when set.");
+        }
+
+        return value.ToString("D");
+    }
+
+    private static string? ReadUnixSocketPath(string name, string? value)
+    {
+        var path = NullIfWhiteSpace(value);
+        if (path is null)
+        {
+            return null;
+        }
+
+        if (!Path.IsPathFullyQualified(path) || path.Any(char.IsControl))
+        {
+            throw new ConfigurationException(
+                $"{name} must be an absolute Unix socket path without control characters.");
+        }
+
+        return Path.GetFullPath(path);
     }
 
     private static string? NullIfWhiteSpace(string? value) =>
