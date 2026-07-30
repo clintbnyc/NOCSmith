@@ -1,0 +1,41 @@
+services:
+  unifi-mcp:
+    image: unifi-mcp:1.1.0
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: unifi-mcp
+    restart: unless-stopped
+    init: true
+    network_mode: host
+    user: "1654:1654"
+    read_only: true
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    stop_grace_period: 30s
+    env_file:
+      - ./secrets/unifi-mcp.env
+    environment:
+      ASPNETCORE_HTTP_PORTS: ""
+      TZ: America/New_York
+      UNIFI_BASE_URL: https://unifi.webbman.nyc/proxy/network/integration
+      UNIFI_ENABLE_LEGACY_READ_ENRICHMENT: "true"
+      UNIFI_ENABLE_CLIENT_JOURNAL: "true"
+      UNIFI_CLIENT_JOURNAL_DB_PATH: /var/lib/unifi-mcp/client-journal.db
+      UNIFI_CLIENT_JOURNAL_RETENTION_DAYS: "90"
+      UNIFI_CLIENT_JOURNAL_MAX_MIB: "256"
+      UNIFI_ENABLE_SCHEDULED_COLLECTION: "true"
+      UNIFI_SCHEDULED_COLLECTION_INTERVAL_MINUTES: "60"
+      UNIFI_SCHEDULED_COLLECTION_HISTORY_HOURS: "24"
+      UNIFI_MCP_HTTP_AUTH_MODE: tailscale
+      UNIFI_MCP_TAILSCALE_ALLOWED_USERS: clint@webbman.nyc
+      UNIFI_MCP_HTTP_PUBLIC_URL: https://unifi-mcp.nutria-newton.ts.net/mcp
+      UNIFI_MCP_TAILSCALE_SOCKET_PATH: /var/run/unifi-mcp/mcp.sock
+    volumes:
+      - ./data:/var/lib/unifi-mcp
+      - ./run:/var/run/unifi-mcp
+      - /etc/ssl/certs/ca-certificates.crt:/etc/ssl/certs/ca-certificates.crt:ro
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,size=16m,mode=1777

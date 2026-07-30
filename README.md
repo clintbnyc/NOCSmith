@@ -1,18 +1,21 @@
 # UniFi MCP Connector
 
-Private, stdio-only MCP access to UniFi Network on pinode, with optional read-only UniFi Site Manager fleet enrichment. The connector uses the local official Integration API as the authority for detailed state and every write. Site Manager stable-v1 reads add fleet host/site/device inventory, firmware/update state, and historical ISP metrics. Narrowly projected, opt-in private local reads remain available for documentation fields, client groups, and System Log events unavailable from the official schema. The local data plane uses the active UniFi OS Server through the Tailscale HTTPS name:
+Private MCP access to UniFi Network on pinode, with stdio and stateless Streamable HTTP transports plus optional read-only UniFi Site Manager fleet enrichment. The connector uses the local official Integration API as the authority for detailed state and every write. Site Manager stable-v1 reads add fleet host/site/device inventory, firmware/update state, and historical ISP metrics. Narrowly projected, opt-in private local reads remain available for documentation fields, client groups, and System Log events unavailable from the official schema. The local data plane uses the active UniFi OS Server through the Tailscale HTTPS name:
 
 `https://unifi.nutria-newton.ts.net/proxy/network/integration`
 
-It does not use the stopped `/srv/unifi` Docker rollback stack, controller database access, a public listener, or insecure TLS bypasses. Private access, when explicitly enabled, permits only one fixed legacy device GET, one fixed v2 active-client GET, one fixed bounded v2 client-history GET, one fixed v2 client-group GET, and one fixed read-only System Logs query, and never returns their raw responses.
+It does not use the stopped `/srv/unifi` Docker rollback stack, controller database access, an Internet-facing listener, or insecure TLS bypasses. The Pinode HTTP origin is loopback-only and is exposed privately by Tailscale Serve. Private controller access, when explicitly enabled, permits only one fixed legacy device GET, one fixed v2 active-client GET, one fixed bounded v2 client-history GET, one fixed v2 client-group GET, and one fixed read-only System Logs query, and never returns their raw responses.
 
 ## Security model
 
 - Local authentication is an official Network Integration API key sent only to the configured local HTTPS endpoint as `X-API-Key`. Optional Site Manager authentication uses a separate read-only API key sent only to `https://api.ui.com`.
-- The API key stays in a 1Password Environment exposed through a locally mounted `.env` file. 1Password supplies the contents on demand without storing the plaintext values on disk.
+- The local stdio API key stays in a 1Password Environment exposed through a locally mounted `.env` file. 1Password supplies those contents on demand without storing plaintext values on the Mac.
+- The unattended Pinode container uses a separately protected `0600` environment file under `/srv/unifi-mcp/secrets`. This is an explicit at-rest secret handoff on Pinode; it is excluded from Git and Docker build context, and Compose never publishes its contents.
 - The connector parses the mounted file itself when launched with `--env-file`. It imports only its supported `UNIFI_*` variables, does not execute the file as shell code, and does not override variables explicitly inherited from the parent process.
-- This does not store the API key in the repository or Codex configuration. The connector never reads macOS Keychain directly.
-- HTTPS uses macOS/.NET system trust plus hostname validation for `unifi.nutria-newton.ts.net`. There is no certificate-validation override and no direct-IP fallback.
+- Neither transport stores the API key in the repository or Codex configuration. The connector never reads macOS Keychain directly.
+- Streamable HTTP defaults to bearer authentication. The Pinode profile trusts `Tailscale-User-Login` only on a Unix socket inside a `0700` directory owned by the non-root container user. Tailscale Serve runs as root, injects the authenticated tailnet identity, and can connect to that socket; unprivileged local host processes cannot. Tailscale 1.98.9 or newer is required because it restricts Unix-socket Serve targets to root.
+- HTTP requests must use the configured public `Host`; a supplied `Origin` must match the same HTTPS authority. MCP responses are marked `Cache-Control: no-store`.
+- HTTPS uses the platform/.NET trust store plus hostname validation. Local stdio uses `unifi.nutria-newton.ts.net`; the Pinode container uses the LAN certificate name `unifi.webbman.nyc` and mounts Pinode's trusted CA bundle read-only. There is no certificate-validation override and no direct-IP fallback.
 - Every normal API operation must exist in the loaded OpenAPI contract. Optional private access is separately constrained to GET `stat/device`, GET `v2/api/site/{site}/clients/active?includeTrafficUsage=true&includeUnifiDevices=true`, GET `v2/api/site/{site}/clients/history?onlyNonBlocked=true&includeUnifiDevices=true&withinHours={bounded-value}`, GET `v2/api/site/{site}/network-members-groups`, and an empty-body query-style POST to `v2/api/site/{site}/system-log/all`. The System Logs POST is a read operation used by Network 10.4.57 and accepts no caller-supplied body. The history GET accepts only the six time-bounded values used by the authenticated Network 10.4.57 UI. Arbitrary private URLs, methods, query keys, and writes are rejected.
 - Site Manager permits only stable `/v1` host, site, device, and ISP-metric reads. Early Access, SD-WAN, Cloud Connector proxying, arbitrary URLs, and Site Manager writes are rejected.
 - Responses, exceptions, snapshots, and previews are recursively redacted. Wi-Fi credentials, API keys, tokens, passwords, pre-shared keys, and hotspot voucher codes are never returned.
@@ -23,6 +26,7 @@ It does not use the stopped `/srv/unifi` Docker rollback stack, controller datab
 
 - .NET SDK 10.0.302 or a compatible 10.0 patch release
 - 1Password for Mac with an Environment and local `.env` destination
+- Docker Engine with Compose for the optional Pinode deployment
 - A UniFi Network Integration API key created in **Network > Settings > Control Plane > Integrations**
 - Optional: a read-only Site Manager stable-v1 API key created at **unifi.ui.com > Settings > API Keys**
 - Tailscale access to `unifi.nutria-newton.ts.net`
@@ -39,6 +43,16 @@ UNIFI_ENABLE_CLIENT_JOURNAL=false
 # UNIFI_CLIENT_JOURNAL_DB_PATH=/absolute/private/path/client-journal.db
 # UNIFI_CLIENT_JOURNAL_RETENTION_DAYS=90
 # UNIFI_CLIENT_JOURNAL_MAX_MIB=256
+UNIFI_ENABLE_SCHEDULED_COLLECTION=false
+# UNIFI_SCHEDULED_COLLECTION_INTERVAL_MINUTES=60
+# UNIFI_SCHEDULED_COLLECTION_SITE_ID=
+# UNIFI_SCHEDULED_COLLECTION_HISTORY_HOURS=24
+# UNIFI_MCP_HTTP_AUTH_MODE=bearer
+# UNIFI_MCP_HTTP_BEARER_TOKEN=<32-or-more-character-token>
+# UNIFI_MCP_TAILSCALE_ALLOWED_USERS=clint@example.com
+# UNIFI_MCP_HTTP_PUBLIC_URL=https://unifi-mcp.example.com/mcp
+# UNIFI_MCP_HTTP_LISTEN_URL=http://0.0.0.0:8080
+# UNIFI_MCP_TAILSCALE_SOCKET_PATH=/absolute/private/directory/unifi-mcp.sock
 UNIFI_SITE_API_KEY=<optional Site Manager API key>
 UNIFI_SITE_MANAGER_LOCAL_HOST_ID=<optional explicit host ID>
 ```
@@ -126,8 +140,8 @@ does not infer a direct cable, radio, VLAN, or physical path through eero.
 
 The client journal is a separate, opt-in local data grain. It does not change
 `unifi_clients list`, `unifi_clients history`, or `unifi_client_groups audit`.
-It is disabled by default, creates nothing at process startup, and never
-collects automatically. Enable it only with both:
+It is disabled by default and creates nothing at process startup unless
+scheduled collection is separately enabled. Enable the journal with both:
 
 ```text
 UNIFI_ENABLE_CLIENT_JOURNAL=true
@@ -148,7 +162,8 @@ and field provenance in cleartext. It never stores controller responses,
 request bodies, credentials, tokens, controller-internal IDs, traffic
 counters, arbitrary JSON, or unrelated fields.
 
-`unifi_collect_client_observations` is the only collection entrypoint. It
+`unifi_collect_client_observations` and `journal collect` use the same
+collection service. It
 fetches controller data before opening the journal transaction, records
 official connected state, bounded UI history, and configured group membership
 as independent sources, and atomically persists the normalized result. Each
@@ -200,16 +215,39 @@ avoids the vulnerable 2.1.11 native SQLite package otherwise selected by the
 10.0.10 metapackage; vulnerability warnings remain errors and are not
 suppressed.
 
-#### Future scheduled collection proposal
+#### Scheduled collection
 
-No daemon, timer, collection CLI command, LaunchAgent, or runtime registration
-is included in this phase. A separate, explicitly approved phase could publish
-a stable `journal collect` CLI entrypoint and run it hourly through a
-LaunchAgent. That design must handle overlap locking, sleep and missed runs,
-redacted rotating logs, retention growth, rollback, and mac-runbook updates.
-The current interactive 1Password-mounted FIFO cannot be assumed to work for
-unattended execution; scheduling remains blocked until a separate
-secret-handoff design is approved and live-verified.
+The proposal is implemented as two explicit entrypoints:
+
+```sh
+dotnet unifi-mcp.dll --env-file=/absolute/path/.env \
+  journal collect [--site-id UUID] [--history-hours HOURS]
+
+dotnet unifi-mcp.dll --env-file=/absolute/path/.env serve-http
+```
+
+`journal collect` emits one compact, client-free JSON result. Exit code `0`
+means complete, `3` means partial, `4` means all sources failed, `2` means
+invalid configuration or arguments, and `1` means another operational failure.
+
+The long-running HTTP host performs scheduled collection only when all three
+gates are true:
+
+```text
+UNIFI_ENABLE_LEGACY_READ_ENRICHMENT=true
+UNIFI_ENABLE_CLIENT_JOURNAL=true
+UNIFI_ENABLE_SCHEDULED_COLLECTION=true
+```
+
+The interval defaults to 60 minutes and accepts 5–1440.
+`UNIFI_SCHEDULED_COLLECTION_HISTORY_HOURS` accepts `24`, `72`, `168`, `336`,
+`720`, or `4320`; an optional site ID must be a UUID. Startup examines the last
+completed persisted collection and delays only until the next due time, so a
+restart or sleep does not cause duplicate catch-up runs. A private sibling
+lock file serializes CLI, tool, and scheduled collectors across processes.
+Overlap is skipped safely, all operational errors are redacted, and the next
+normal interval remains scheduled. Retention and size enforcement use the same
+transactional journal rules described above.
 
 `unifi_alerts` separately sends `{}` to `/proxy/network/v2/api/site/{site}/system-log/all`. Although the endpoint uses POST, it is a read-only collection query: callers cannot supply a body, path, or method. Network 10.4.57 was live-verified to accept the existing Integration API key and return up to 50 records with pagination metadata. The projection preserves controller-supplied event/key, raw description/title, severity, status, category/subcategory, type, target, timestamp, and a small allowlist from `parameters`, including IP address, affected clients, learn-more reference, object, console, count, platform, section, and administrator identifiers. Raw parameter objects and unrelated fields are discarded.
 
@@ -233,6 +271,110 @@ Run the live diagnostic without printing secrets:
 ```
 
 `--env-file /absolute/path/.env` is also accepted. The diagnostic checks configuration, successful secret injection, normal TLS validation, `/v1/info`, contract selection, site discovery, private enrichment, the fixed one-day client-history classification, the fixed client-group audit, the fixed System Logs query, non-mutating client-journal health, and—when configured—read-only Site Manager fleet access plus explicit local-host mapping. A configured host ID that is not visible to the Site Manager account makes Site Manager doctor status `degraded`.
+
+## Pinode container deployment
+
+The tracked Compose profile builds a multi-stage ARM64-compatible image from
+digest-pinned .NET 10 SDK and ASP.NET runtime images. The runtime is non-root,
+read-only, drops every Linux capability, enables `no-new-privileges`, and uses
+a private Unix socket for the Tailscale Serve backend. It does not publish a
+Docker port to the LAN. The container reaches UniFi
+through `https://unifi.webbman.nyc` on the LAN and mounts Pinode's existing
+system CA bundle read-only so normal certificate and hostname validation remain
+enabled.
+
+Prepare the state and secret paths on Pinode:
+
+```sh
+cd /srv/unifi-mcp
+sudo install -d -m 0700 -o 1654 -g 1654 data
+sudo install -d -m 0700 -o 1654 -g 1654 run
+sudo install -d -m 0700 -o admin -g admin secrets
+sudo install -m 0600 -o admin -g admin /dev/null \
+  secrets/unifi-mcp.env
+```
+
+The secret file contains only values that must remain private:
+
+```text
+UNIFI_API_KEY=<Network Integration API key>
+# UNIFI_SITE_API_KEY=<optional Site Manager API key>
+```
+
+All non-secret production settings are visible in `docker-compose.yml`.
+Validate and deploy without printing the resolved environment:
+
+```sh
+sudo docker compose config --quiet
+sudo docker compose build --pull
+sudo docker compose up -d
+```
+
+The dedicated Tailscale Service is `svc:unifi-mcp`. Its policy grants
+`group:network-admins` TCP 443 access and permits only `tag:pinode` to advertise
+it. Pinode terminates HTTPS and proxies the Service to the private Unix socket.
+Use Tailscale 1.98.9 or newer, and configure Serve as root:
+
+```sh
+sudo tailscale serve --yes --service=svc:unifi-mcp --https=443 \
+  unix:/srv/unifi-mcp/run/mcp.sock
+```
+
+The production MCP URL is:
+
+```text
+https://unifi-mcp.nutria-newton.ts.net/mcp
+```
+
+The Compose profile accepts only `clint@webbman.nyc` as the authenticated
+Tailscale identity. Add another identity deliberately to
+`UNIFI_MCP_TAILSCALE_ALLOWED_USERS`; do not replace the allowlist with a
+wildcard.
+
+Verify the container, socket boundary, MCP handshake, scheduled journal, and
+Service readiness:
+
+```sh
+sudo docker inspect unifi-mcp \
+  --format 'running={{.State.Running}} status={{.State.Status}}'
+sudo stat -c '%a %u:%g %F' run
+sudo test -S run/mcp.sock
+sudo docker compose logs --since 10m unifi-mcp
+sudo tailscale serve status --json
+sudo docker exec unifi-mcp \
+  dotnet /app/unifi-mcp.dll journal collect --history-hours 24
+```
+
+The final command is an explicit extra collection and is therefore optional
+during routine checks. Successful HTTPS MCP initialization from an allowlisted
+tailnet user is the end-to-end acceptance test. A local TCP request cannot
+reach the application because it has no TCP listener; a request without an
+injected Tailscale identity returns `401`, and a mismatched `Host` or `Origin`
+returns `403`.
+
+Codex uses the Streamable HTTP endpoint directly:
+
+```toml
+[mcp_servers.unifi]
+url = "https://unifi-mcp.nutria-newton.ts.net/mcp"
+```
+
+No API key or bearer token belongs in Codex configuration. Keep the old stdio
+registration until the HTTP endpoint has passed a live initialize and tool
+call, then remove the stdio command and restart Codex.
+
+Rollback is failure-domain specific:
+
+- Disable only remote MCP access with
+  `sudo tailscale serve --service=svc:unifi-mcp --https=443 off`.
+- Stop collection and HTTP together with
+  `sudo docker compose down`; the journal and secret file remain.
+- Restore the prior image/source bundle and run
+  `sudo docker compose up -d` to roll back application code without replacing
+  the journal.
+- Do not copy a newer journal into older code unless that version explicitly
+  supports the journal schema. Retain a pre-change DB/WAL/SHM backup when
+  crossing schema versions.
 
 ## MCP tools
 

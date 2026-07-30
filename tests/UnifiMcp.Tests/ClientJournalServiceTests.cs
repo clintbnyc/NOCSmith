@@ -10,6 +10,54 @@ public sealed class ClientJournalServiceTests
     private static readonly DateTimeOffset Start =
         DateTimeOffset.Parse("2026-07-26T10:00:00.0000000+00:00");
 
+    [Theory]
+    [InlineData(false, false)]
+    [InlineData(false, true)]
+    [InlineData(true, false)]
+    [InlineData(true, true)]
+    public void Describe_reports_scheduled_collection_side_effects(
+        bool scheduledCollectionEnabled,
+        bool scheduledCollectionHost)
+    {
+        var configuration = Configuration("/private/tmp/client-journal.db") with
+        {
+            EnableScheduledCollection = scheduledCollectionEnabled,
+            IsScheduledCollectionHost = scheduledCollectionHost
+        };
+        var service = new ClientJournalService(configuration, null!, null!);
+
+        var description = service.Describe();
+
+        Assert.Equal(
+            scheduledCollectionEnabled && scheduledCollectionHost,
+            description["automaticCollection"]!.GetValue<bool>());
+        Assert.Equal(
+            scheduledCollectionEnabled && scheduledCollectionHost,
+            description["createsAtStartup"]!.GetValue<bool>());
+    }
+
+    [Fact]
+    public async Task Recovery_respects_the_cross_process_collection_lease()
+    {
+        if (OperatingSystem.IsWindows())
+        {
+            return;
+        }
+
+        using var directory = TemporaryPrivateDirectory.Create();
+        var path = Path.Combine(directory.Path, "journal.db");
+        File.WriteAllText(path, "not a sqlite database");
+        File.SetUnixFileMode(path, UnixFileMode.UserRead | UnixFileMode.UserWrite);
+        var configuration = Configuration(path);
+        var store = new ClientJournalStore(configuration);
+        var service = new ClientJournalService(configuration, null!, store);
+        var fingerprint = store.Inspect().CorruptionFingerprint!;
+        using var lease = store.AcquireCollectionLease();
+
+        await Assert.ThrowsAsync<ClientCollectionInProgressException>(
+            () => service.RecoverAsync(fingerprint, TestContext.Current.CancellationToken));
+    }
+
     [Fact]
     public async Task Changes_use_only_complete_source_baselines_and_are_deterministic()
     {

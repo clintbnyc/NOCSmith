@@ -117,6 +117,53 @@ public sealed class ClientJournalStore
         _configuration.ClientJournalDatabasePath ??
         throw new ConfigurationException("The client journal database path is not configured.");
 
+    public ClientJournalCollectionLease AcquireCollectionLease()
+    {
+        RequireEnabled();
+        EnsureWritablePath();
+        if (OperatingSystem.IsWindows())
+        {
+            throw new ConfigurationException(
+                "The client journal currently requires Unix filesystem permission semantics.");
+        }
+
+        var lockPath = DatabasePath + ".collect.lock";
+        if (File.Exists(lockPath))
+        {
+            ValidateNoSymlink(lockPath, isDirectory: false);
+        }
+
+        FileStream stream;
+        try
+        {
+            stream = new FileStream(
+                lockPath,
+                FileMode.OpenOrCreate,
+                FileAccess.ReadWrite,
+                FileShare.None);
+        }
+        catch (IOException exception)
+        {
+            throw new ClientCollectionInProgressException(
+                "Another client journal collection is already in progress.",
+                exception);
+        }
+
+        try
+        {
+            File.SetUnixFileMode(
+                lockPath,
+                UnixFileMode.UserRead | UnixFileMode.UserWrite);
+            ValidateNoSymlink(lockPath, isDirectory: false);
+            return new ClientJournalCollectionLease(stream);
+        }
+        catch
+        {
+            stream.Dispose();
+            throw;
+        }
+    }
+
     public async Task InitializeAsync(CancellationToken cancellationToken)
     {
         RequireEnabled();
@@ -262,6 +309,30 @@ public sealed class ClientJournalStore
                 GetActiveBytes(),
                 GetQuarantineInventory());
         }
+    }
+
+    internal long GetLatestCollectionCompletionMilliseconds(
+        string? siteId,
+        int historyHours)
+    {
+        RequireEnabled();
+        using var connection = OpenReadOnlyConnection();
+        using var command = connection.CreateCommand();
+        command.CommandText =
+            @"
+            SELECT completed_at_ms
+            FROM collections
+            WHERE ($site_id IS NULL OR site_id = $site_id)
+              AND history_hours = $history_hours
+            ORDER BY completed_at_ms DESC, collection_id DESC
+            LIMIT 1;
+            ";
+        command.Parameters.AddWithValue("$site_id", (object?)siteId ?? DBNull.Value);
+        command.Parameters.AddWithValue("$history_hours", historyHours);
+
+        return command.ExecuteScalar() is long completedAtMilliseconds
+            ? completedAtMilliseconds
+            : 0;
     }
 
     public IReadOnlyList<StoredCollection> ReadCollections(string? siteId = null)
@@ -1594,6 +1665,26 @@ public sealed record SourceSuccessRate(
     long CompleteCount);
 
 public sealed record QuarantineInventory(int Count, long Bytes);
+
+public sealed class ClientJournalCollectionLease : IDisposable
+{
+    private readonly FileStream _stream;
+
+    internal ClientJournalCollectionLease(FileStream stream)
+    {
+        _stream = stream;
+    }
+
+    public void Dispose() => _stream.Dispose();
+}
+
+public sealed class ClientCollectionInProgressException : Exception
+{
+    public ClientCollectionInProgressException(string message, Exception? innerException = null)
+        : base(message, innerException)
+    {
+    }
+}
 
 public sealed record JournalInspection(
     string State,

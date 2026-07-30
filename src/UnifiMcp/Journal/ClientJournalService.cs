@@ -33,8 +33,10 @@ public sealed partial class ClientJournalService
     public JsonObject Describe() => new()
     {
         ["enabled"] = _configuration.EnableClientJournal,
-        ["automaticCollection"] = false,
-        ["createsAtStartup"] = false,
+        ["automaticCollection"] = _configuration.EnableScheduledCollection &&
+                                 _configuration.IsScheduledCollectionHost,
+        ["createsAtStartup"] = _configuration.EnableScheduledCollection &&
+                              _configuration.IsScheduledCollectionHost,
         ["rawControllerResponsesStored"] = false,
         ["databaseEncryption"] = false,
         ["retentionDays"] = _configuration.ClientJournalRetentionDays,
@@ -52,6 +54,7 @@ public sealed partial class ClientJournalService
         int? historyHours,
         CancellationToken cancellationToken)
     {
+        using var lease = _store.AcquireCollectionLease();
         var collection = await _collector
             .CollectAsync(siteId, historyHours, cancellationToken)
             .ConfigureAwait(false);
@@ -257,6 +260,7 @@ public sealed partial class ClientJournalService
         string corruptionFingerprint,
         CancellationToken cancellationToken)
     {
+        using var lease = _store.AcquireCollectionLease();
         await _store.RecoverAsync(corruptionFingerprint, cancellationToken)
             .ConfigureAwait(false);
         var health = _store.Inspect();
