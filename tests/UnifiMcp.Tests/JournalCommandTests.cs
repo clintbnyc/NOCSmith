@@ -1,4 +1,5 @@
 using System.Net;
+using Microsoft.Data.Sqlite;
 using UnifiMcp.Api;
 using UnifiMcp.Configuration;
 
@@ -52,10 +53,13 @@ public sealed class JournalCommandTests
     {
         var apiFailure = new UnifiApiException(HttpStatusCode.BadGateway, "controller unavailable");
         var transportFailure = new HttpRequestException("transport unavailable");
+        var journalFailure = new SqliteException("database is locked", 5);
 
         Assert.True(JournalCommand.IsHandledFailure(apiFailure));
         Assert.True(JournalCommand.IsHandledFailure(transportFailure));
+        Assert.True(JournalCommand.IsHandledFailure(journalFailure));
         Assert.Equal(JournalCommand.ErrorExitCode, JournalCommand.ExitCodeForException(apiFailure));
         Assert.Equal(JournalCommand.ErrorExitCode, JournalCommand.ExitCodeForException(transportFailure));
+        Assert.Equal(JournalCommand.ErrorExitCode, JournalCommand.ExitCodeForException(journalFailure));
     }
 }

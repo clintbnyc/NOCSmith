@@ -119,10 +119,13 @@ public sealed class ScheduledClientCollectionService : BackgroundService
             return _configuration.ScheduledCollectionInterval;
         }
 
-        var lastCompletedAt = inspection.LastCollections
-            .Select(value => value.CompletedAtMilliseconds)
-            .DefaultIfEmpty()
-            .Max();
+        var scheduledSiteId = string.IsNullOrWhiteSpace(_configuration.ScheduledCollectionSiteId)
+            ? _configuration.DefaultSiteId
+            : _configuration.ScheduledCollectionSiteId;
+        var lastCompletedAt = ScheduledCollectionPlanner.LastCompletionMilliseconds(
+            inspection.LastCollections,
+            scheduledSiteId,
+            _configuration.ScheduledCollectionHistoryHours);
         if (lastCompletedAt <= 0)
         {
             return TimeSpan.Zero;
@@ -137,6 +140,19 @@ public sealed class ScheduledClientCollectionService : BackgroundService
 
 internal static class ScheduledCollectionPlanner
 {
+    public static long LastCompletionMilliseconds(
+        IEnumerable<HealthCollection> collections,
+        string? scheduledSiteId,
+        int scheduledHistoryHours) =>
+        collections
+            .Where(value =>
+                (string.IsNullOrWhiteSpace(scheduledSiteId) ||
+                 string.Equals(value.SiteId, scheduledSiteId, StringComparison.Ordinal)) &&
+                value.HistoryHours == scheduledHistoryHours)
+            .Select(value => value.CompletedAtMilliseconds)
+            .DefaultIfEmpty()
+            .Max();
+
     public static TimeSpan DelayUntilDue(
         DateTimeOffset lastCompletedAt,
         DateTimeOffset now,

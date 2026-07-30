@@ -861,7 +861,7 @@ public sealed class ClientJournalStore
         {
             command.CommandText =
                 @"
-                SELECT collection_id, site_id, completed_at_ms, overall_status
+                SELECT collection_id, site_id, completed_at_ms, history_hours, overall_status
                 FROM collections
                 ORDER BY completed_at_ms DESC, collection_id DESC
                 LIMIT 10;
@@ -873,7 +873,8 @@ public sealed class ClientJournalStore
                     reader.GetString(0),
                     reader.GetString(1),
                     reader.GetInt64(2),
-                    reader.GetString(3)));
+                    reader.GetInt32(3),
+                    reader.GetString(4)));
             }
         }
 
@@ -1633,6 +1634,7 @@ public sealed record HealthCollection(
     string CollectionId,
     string SiteId,
     long CompletedAtMilliseconds,
+    int HistoryHours,
     string OverallStatus);
 
 public sealed record SourceSuccessRate(

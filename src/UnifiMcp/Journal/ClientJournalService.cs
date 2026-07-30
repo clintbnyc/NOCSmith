@@ -102,6 +102,7 @@ public sealed partial class ClientJournalService
                     ["collectionId"] = value.CollectionId,
                     ["siteId"] = value.SiteId,
                     ["completedAt"] = ClientJournalValues.Rfc3339(value.CompletedAtMilliseconds),
+                    ["historyHours"] = value.HistoryHours,
                     ["overallStatus"] = value.OverallStatus
                 }).ToArray()),
             ["sourceSuccessRates"] = new JsonArray(

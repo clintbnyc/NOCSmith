@@ -1,5 +1,6 @@
 using System.Globalization;
 using System.Text.Json;
+using Microsoft.Data.Sqlite;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
 using UnifiMcp.Api;
@@ -126,6 +127,7 @@ public static class JournalCommand
         ClientJournalSizeException or
         ClientJournalMigrationException or
         ClientJournalUnavailableException or
+        SqliteException or
         IOException or
         UnauthorizedAccessException;
 
