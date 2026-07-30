@@ -42,7 +42,7 @@ public sealed class ScheduledClientCollectionService : BackgroundService
             "Scheduled client collection enabled every {IntervalMinutes} minute(s).",
             _configuration.ScheduledCollectionIntervalMinutes);
 
-        var initialDelay = GetInitialDelay();
+        var initialDelay = GetInitialDelayOrRetry();
         if (initialDelay > TimeSpan.Zero)
         {
             await Task.Delay(initialDelay, _timeProvider, stoppingToken).ConfigureAwait(false);
@@ -85,6 +85,21 @@ public sealed class ScheduledClientCollectionService : BackgroundService
                     _timeProvider,
                     stoppingToken)
                 .ConfigureAwait(false);
+        }
+    }
+
+    internal TimeSpan GetInitialDelayOrRetry()
+    {
+        try
+        {
+            return GetInitialDelay();
+        }
+        catch (Exception exception)
+        {
+            _logger.LogError(
+                "Scheduled client collection startup inspection failed closed: {Message}",
+                _redactor.Redact(exception.Message));
+            return _configuration.ScheduledCollectionInterval;
         }
     }
 

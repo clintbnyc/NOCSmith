@@ -1,3 +1,5 @@
+using System.Net;
+using UnifiMcp.Api;
 using UnifiMcp.Configuration;
 
 namespace UnifiMcp.Tests;
@@ -43,5 +45,17 @@ public sealed class JournalCommandTests
         int expected)
     {
         Assert.Equal(expected, JournalCommand.ExitCodeForStatus(status));
+    }
+
+    [Fact]
+    public void Handles_controller_failures_as_redacted_operational_errors()
+    {
+        var apiFailure = new UnifiApiException(HttpStatusCode.BadGateway, "controller unavailable");
+        var transportFailure = new HttpRequestException("transport unavailable");
+
+        Assert.True(JournalCommand.IsHandledFailure(apiFailure));
+        Assert.True(JournalCommand.IsHandledFailure(transportFailure));
+        Assert.Equal(JournalCommand.ErrorExitCode, JournalCommand.ExitCodeForException(apiFailure));
+        Assert.Equal(JournalCommand.ErrorExitCode, JournalCommand.ExitCodeForException(transportFailure));
     }
 }

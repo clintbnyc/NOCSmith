@@ -2,6 +2,7 @@ using System.Globalization;
 using System.Text.Json;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
+using UnifiMcp.Api;
 using UnifiMcp.Configuration;
 using UnifiMcp.Contracts;
 using UnifiMcp.Journal;
@@ -47,15 +48,7 @@ public static class JournalCommand
             Console.Error.WriteLine("UniFi MCP journal collection cancelled.");
             return ErrorExitCode;
         }
-        catch (Exception exception) when (
-            exception is ConfigurationException or
-            ContractException or
-            ClientCollectionInProgressException or
-            ClientJournalSizeException or
-            ClientJournalMigrationException or
-            ClientJournalUnavailableException or
-            IOException or
-            UnauthorizedAccessException)
+        catch (Exception exception) when (IsHandledFailure(exception))
         {
             var redactor = new SecretRedactor(
                 Environment.GetEnvironmentVariable("UNIFI_API_KEY"),
@@ -64,9 +57,7 @@ public static class JournalCommand
             Console.Error.WriteLine(
                 "UniFi MCP journal collection failed: " +
                 redactor.Redact(exception.Message));
-            return exception is ConfigurationException or ContractException
-                ? UsageExitCode
-                : ErrorExitCode;
+            return ExitCodeForException(exception);
         }
     }
 
@@ -125,6 +116,23 @@ public static class JournalCommand
         "failed" => FailedCollectionExitCode,
         _ => ErrorExitCode
     };
+
+    internal static bool IsHandledFailure(Exception exception) =>
+        exception is ConfigurationException or
+        ContractException or
+        UnifiApiException or
+        HttpRequestException or
+        ClientCollectionInProgressException or
+        ClientJournalSizeException or
+        ClientJournalMigrationException or
+        ClientJournalUnavailableException or
+        IOException or
+        UnauthorizedAccessException;
+
+    internal static int ExitCodeForException(Exception exception) =>
+        exception is ConfigurationException or ContractException
+            ? UsageExitCode
+            : ErrorExitCode;
 
     private static string ReadValue(string[] args, ref int index, string option)
     {

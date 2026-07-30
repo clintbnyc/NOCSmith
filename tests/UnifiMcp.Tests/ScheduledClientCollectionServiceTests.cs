@@ -1,4 +1,7 @@
+using Microsoft.Extensions.Logging.Abstractions;
+using UnifiMcp.Configuration;
 using UnifiMcp.Journal;
+using UnifiMcp.Security;
 
 namespace UnifiMcp.Tests;
 
@@ -38,5 +41,29 @@ public sealed class ScheduledClientCollectionServiceTests
                 DateTimeOffset.UtcNow,
                 DateTimeOffset.UtcNow,
                 TimeSpan.Zero));
+    }
+
+    [Fact]
+    public void Startup_inspection_failure_defers_to_the_normal_retry_interval()
+    {
+        var configuration = new UnifiConfiguration(
+            new Uri("https://example.test/proxy/network/integration/"),
+            "test-key",
+            DefaultSiteId: null,
+            RequestTimeout: TimeSpan.FromSeconds(30),
+            EnableClientJournal: true,
+            ClientJournalDatabasePath: null,
+            EnableScheduledCollection: true);
+        var service = new ScheduledClientCollectionService(
+            configuration,
+            null!,
+            new ClientJournalStore(configuration),
+            new SecretRedactor(),
+            TimeProvider.System,
+            NullLogger<ScheduledClientCollectionService>.Instance);
+
+        var delay = service.GetInitialDelayOrRetry();
+
+        Assert.Equal(configuration.ScheduledCollectionInterval, delay);
     }
 }
