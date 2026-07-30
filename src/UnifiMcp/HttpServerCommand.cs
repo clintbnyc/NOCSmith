@@ -20,7 +20,10 @@ public static class HttpServerCommand
                 "serve-http does not accept positional arguments.");
         }
 
-        var configuration = UnifiConfiguration.Load();
+        var configuration = UnifiConfiguration.Load() with
+        {
+            IsScheduledCollectionHost = true
+        };
         configuration.RequireHttpServerConfiguration();
 
         var hostBuilder = Host.CreateDefaultBuilder(Array.Empty<string>())

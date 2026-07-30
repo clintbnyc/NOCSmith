@@ -34,6 +34,20 @@ public sealed class ScheduledClientCollectionServiceTests
     }
 
     [Fact]
+    public void Far_future_collection_retries_at_the_normal_interval()
+    {
+        var now = DateTimeOffset.Parse("2026-07-27T12:00:00Z");
+        var interval = TimeSpan.FromHours(1);
+
+        var delay = ScheduledCollectionPlanner.DelayUntilDue(
+            now.AddDays(50),
+            now,
+            interval);
+
+        Assert.Equal(interval, delay);
+    }
+
+    [Fact]
     public void Invalid_interval_fails_closed()
     {
         Assert.Throws<ArgumentOutOfRangeException>(

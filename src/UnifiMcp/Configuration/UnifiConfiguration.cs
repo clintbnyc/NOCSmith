@@ -23,7 +23,8 @@ public sealed record UnifiConfiguration(
     string? McpHttpBearerToken = null,
     IReadOnlySet<string>? McpHttpTailscaleAllowedUsers = null,
     Uri? McpHttpPublicUri = null,
-    Uri? McpHttpListenUri = null)
+    Uri? McpHttpListenUri = null,
+    bool IsScheduledCollectionHost = false)
 {
     public const string DefaultBaseUrl = "https://unifi.nutria-newton.ts.net/proxy/network/integration";
     public const string SiteManagerBaseUrl = "https://api.ui.com/";

@@ -11,23 +11,28 @@ public sealed class ClientJournalServiceTests
         DateTimeOffset.Parse("2026-07-26T10:00:00.0000000+00:00");
 
     [Theory]
-    [InlineData(false)]
-    [InlineData(true)]
-    public void Describe_reports_scheduled_collection_side_effects(bool scheduledCollectionEnabled)
+    [InlineData(false, false)]
+    [InlineData(false, true)]
+    [InlineData(true, false)]
+    [InlineData(true, true)]
+    public void Describe_reports_scheduled_collection_side_effects(
+        bool scheduledCollectionEnabled,
+        bool scheduledCollectionHost)
     {
         var configuration = Configuration("/private/tmp/client-journal.db") with
         {
-            EnableScheduledCollection = scheduledCollectionEnabled
+            EnableScheduledCollection = scheduledCollectionEnabled,
+            IsScheduledCollectionHost = scheduledCollectionHost
         };
         var service = new ClientJournalService(configuration, null!, null!);
 
         var description = service.Describe();
 
         Assert.Equal(
-            scheduledCollectionEnabled,
+            scheduledCollectionEnabled && scheduledCollectionHost,
             description["automaticCollection"]!.GetValue<bool>());
         Assert.Equal(
-            scheduledCollectionEnabled,
+            scheduledCollectionEnabled && scheduledCollectionHost,
             description["createsAtStartup"]!.GetValue<bool>());
     }
 

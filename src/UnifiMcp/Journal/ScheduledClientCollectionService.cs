@@ -139,6 +139,9 @@ public sealed class ScheduledClientCollectionService : BackgroundService
 
 internal static class ScheduledCollectionPlanner
 {
+    private static readonly TimeSpan MaximumTaskDelay =
+        TimeSpan.FromMilliseconds(uint.MaxValue - 1);
+
     public static TimeSpan DelayUntilDue(
         DateTimeOffset lastCompletedAt,
         DateTimeOffset now,
@@ -150,6 +153,14 @@ internal static class ScheduledCollectionPlanner
         }
 
         var dueAt = lastCompletedAt + interval;
-        return dueAt <= now ? TimeSpan.Zero : dueAt - now;
+        if (dueAt <= now)
+        {
+            return TimeSpan.Zero;
+        }
+
+        var delay = dueAt - now;
+        return delay > MaximumTaskDelay
+            ? interval > MaximumTaskDelay ? MaximumTaskDelay : interval
+            : delay;
     }
 }
