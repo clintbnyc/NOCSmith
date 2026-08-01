@@ -146,7 +146,10 @@ operation is exposed.
 resources named above. It returns at most 200 clients and 100 AP-radio records
 (defaults: 100 and 50), with an optional exact client-MAC filter. The response
 is a fresh current-state projection; it does not read or extend the client
-journal.
+journal. Wired and transport-unknown active records are excluded before the
+client limit is applied. Source processing fails closed above 5,000 client
+records, 1,000 device records, 16 entries in either radio array on one device,
+or 2,000 projected radios.
 
 The explicit client allowlist covers controller-reported AP/radio association,
 band, channel and width, RSSI, noise floor, SNR, signal quality and Signal
@@ -158,6 +161,12 @@ including transmit power, channel/width, utilization, interference, noise,
 station count, and retry/error telemetry. This lets one response correlate an
 associated client's signal with its AP and compare current conditions across
 AP radios.
+
+`association.associatedAt` accepts only an explicit controller association
+timestamp; the controller's broader `first_seen` value is not relabelled as a
+current association. Radio configuration and statistics are correlated only
+by a recognized radio identifier. Anonymous records remain separate rather
+than being paired by array position.
 
 Every supported field is present with `null` when the controller or firmware
 does not expose a recognized version-specific alias. Direct SNR takes

@@ -19,6 +19,8 @@ public sealed partial class WifiDiagnosticsReadService
     private const int MaximumRadioLimit = 100;
     private const int MaximumSourceClients = 5000;
     private const int MaximumSourceDevices = 1000;
+    private const int MaximumSourceRadiosPerDevice = 16;
+    private const int MaximumSourceRadios = 2000;
     private const int MaximumTextLength = 256;
 
     private readonly UnifiConfiguration _configuration;
@@ -48,6 +50,10 @@ public sealed partial class WifiDiagnosticsReadService
         ["fixedResources"] = new JsonArray(ClientResource, DeviceResource),
         ["clientLimit"] = MaximumClientLimit,
         ["radioLimit"] = MaximumRadioLimit,
+        ["sourceClientLimit"] = MaximumSourceClients,
+        ["sourceDeviceLimit"] = MaximumSourceDevices,
+        ["sourceRadioRecordsPerDeviceArrayLimit"] = MaximumSourceRadiosPerDevice,
+        ["sourceRadioLimit"] = MaximumSourceRadios,
         ["rawPrivateResponsesReturned"] = false,
         ["redactionApplied"] = true
     };
@@ -97,6 +103,7 @@ public sealed partial class WifiDiagnosticsReadService
             .GroupBy(device => device.MacAddress!, StringComparer.OrdinalIgnoreCase)
             .ToDictionary(group => group.Key, group => group.First().Name, StringComparer.OrdinalIgnoreCase);
         var projectedClients = sourceClients
+            .Where(client => ReadWireless(client) is true)
             .Select(client => ProjectClient(client, accessPointNames))
             .Where(client => client is not null)
             .Cast<JsonObject>()
@@ -104,8 +111,16 @@ public sealed partial class WifiDiagnosticsReadService
                 string.Equals(client["macAddress"]?.GetValue<string>(), normalizedClientMac, StringComparison.OrdinalIgnoreCase))
             .OrderBy(client => client["macAddress"]!.GetValue<string>(), StringComparer.Ordinal)
             .ToArray();
-        var projectedRadios = sourceDevices
+        var sourceRadios = sourceDevices
             .SelectMany(ProjectRadios)
+            .Take(MaximumSourceRadios + 1)
+            .ToArray();
+        if (sourceRadios.Length > MaximumSourceRadios)
+        {
+            throw new ContractException($"Private UniFi radio diagnostics exceeded the {MaximumSourceRadios} record safety limit.");
+        }
+
+        var projectedRadios = sourceRadios
             .OrderBy(radio => radio["accessPointMacAddress"]!.GetValue<string>(), StringComparer.Ordinal)
             .ThenBy(radio => radio["radioName"]?.GetValue<string>(), StringComparer.Ordinal)
             .ToArray();
@@ -160,7 +175,7 @@ public sealed partial class WifiDiagnosticsReadService
         var rssi = ReadDouble(source, "signal", "rssi", "rssiDbm");
         var snr = ReadDouble(source, "snr", "snrDb") ??
             (rssi is not null && noiseFloor is not null ? rssi.Value - noiseFloor.Value : null);
-        var associatedAt = ReadEpochTimestamp(source, "first_seen", "associated_at", "association_time", "associatedAt");
+        var associatedAt = ReadEpochTimestamp(source, "associated_at", "association_time", "associatedAt");
         var lastSeenAt = ReadEpochTimestamp(source, "last_seen", "lastSeen", "lastSeenAt");
         var roamAt = ReadEpochTimestamp(source, "last_roam", "roam_time", "roamAt");
         var accessPointMacAddress = ReadMac(source, "ap_mac", "apMac", "uplink_mac", "uplinkMac");
@@ -235,18 +250,10 @@ public sealed partial class WifiDiagnosticsReadService
             yield break;
         }
 
-        var configurations = ((device["radio_table"] as JsonArray) ?? device["radioTable"] as JsonArray)?
-            .OfType<JsonObject>()
-            .ToArray() ?? Array.Empty<JsonObject>();
-        var statistics = ((device["radio_table_stats"] as JsonArray) ?? device["radioTableStats"] as JsonArray)?
-            .OfType<JsonObject>()
-            .ToArray() ?? Array.Empty<JsonObject>();
-        var configurationByRadio = configurations
-            .Select((radio, index) => (Key: RadioKey(radio, index), Radio: radio))
-            .ToDictionary(item => item.Key, item => item.Radio, StringComparer.OrdinalIgnoreCase);
-        var statisticsByRadio = statistics
-            .Select((radio, index) => (Key: RadioKey(radio, index), Radio: radio))
-            .ToDictionary(item => item.Key, item => item.Radio, StringComparer.OrdinalIgnoreCase);
+        var configurations = ReadRadioRecords(device, "radio_table", "radioTable");
+        var statistics = ReadRadioRecords(device, "radio_table_stats", "radioTableStats");
+        var configurationByRadio = BuildRadioIndex(configurations, "configuration");
+        var statisticsByRadio = BuildRadioIndex(statistics, "statistics");
         foreach (var key in configurationByRadio.Keys
             .Union(statisticsByRadio.Keys, StringComparer.OrdinalIgnoreCase)
             .OrderBy(value => value, StringComparer.OrdinalIgnoreCase))
@@ -286,6 +293,13 @@ public sealed partial class WifiDiagnosticsReadService
     private JsonObject CreateMetadata() => new()
     {
         ["readOnly"] = true,
+        ["sourceLimits"] = new JsonObject
+        {
+            ["clients"] = MaximumSourceClients,
+            ["devices"] = MaximumSourceDevices,
+            ["radioRecordsPerDeviceArray"] = MaximumSourceRadiosPerDevice,
+            ["projectedRadios"] = MaximumSourceRadios
+        },
         ["sources"] = new JsonArray(
             new JsonObject { ["kind"] = "private-v2-api", ["fixedResource"] = ClientResource },
             new JsonObject { ["kind"] = "legacy-private-api", ["fixedResource"] = DeviceResource }),
@@ -322,8 +336,53 @@ public sealed partial class WifiDiagnosticsReadService
         return value;
     }
 
-    private static string RadioKey(JsonObject radio, int index) =>
-        ReadTextValue(radio, "radio", "name", "radioName")?.Trim() ?? $"index:{index}";
+    private static JsonObject[] ReadRadioRecords(
+        JsonObject device,
+        string snakeCaseName,
+        string camelCaseName)
+    {
+        var source = (device[snakeCaseName] as JsonArray) ?? device[camelCaseName] as JsonArray;
+        if (source is null)
+        {
+            return Array.Empty<JsonObject>();
+        }
+
+        if (source.Count > MaximumSourceRadiosPerDevice)
+        {
+            throw new ContractException(
+                $"Private UniFi device diagnostics field '{snakeCaseName}' exceeded the {MaximumSourceRadiosPerDevice} record safety limit.");
+        }
+
+        var records = new JsonObject[source.Count];
+        for (var index = 0; index < source.Count; index++)
+        {
+            records[index] = source[index] as JsonObject ?? throw new ContractException(
+                $"Private UniFi device diagnostics field '{snakeCaseName}' returned a non-object record at index {index}.");
+        }
+
+        return records;
+    }
+
+    private static IReadOnlyDictionary<string, JsonObject> BuildRadioIndex(
+        IReadOnlyList<JsonObject> radios,
+        string anonymousSource)
+    {
+        var index = new Dictionary<string, JsonObject>(StringComparer.OrdinalIgnoreCase);
+        for (var position = 0; position < radios.Count; position++)
+        {
+            var identifier = ReadTextValue(radios[position], "radio", "name", "radioName")?.Trim();
+            var key = string.IsNullOrWhiteSpace(identifier)
+                ? $"anonymous:{anonymousSource}:{position}"
+                : $"identified:{identifier}";
+            if (!index.TryAdd(key, radios[position]))
+            {
+                throw new ContractException(
+                    $"Private UniFi device diagnostics returned duplicate radio identifier '{identifier}'.");
+            }
+        }
+
+        return index;
+    }
 
     private static JsonObject MergeRadio(JsonObject? configuration, JsonObject? statistics)
     {

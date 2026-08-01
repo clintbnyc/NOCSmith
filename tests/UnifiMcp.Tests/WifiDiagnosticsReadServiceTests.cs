@@ -78,6 +78,7 @@ public sealed class WifiDiagnosticsReadServiceTests
         Assert.Equal(33d, projectedClient["signal"]!["snrDb"]!.GetValue<double>());
         Assert.Equal("balanced", projectedClient["signal"]!["signalBalance"]!.GetValue<string>());
         Assert.Equal(866.7d, projectedClient["phy"]!["rxRateMbps"]!.GetValue<double>(), precision: 3);
+        Assert.Null(projectedClient["association"]!["associatedAt"]);
         Assert.True(projectedClient["network"]!["apipa"]!.GetValue<bool>());
         Assert.Contains("token=<redacted>", projectedClient["network"]!["dhcpFailureReason"]!.GetValue<string>(), StringComparison.Ordinal);
 
@@ -119,6 +120,7 @@ public sealed class WifiDiagnosticsReadServiceTests
                     ["wifiStandard"] = "be",
                     ["rxRateMbps"] = 1200,
                     ["txNss"] = 2,
+                    ["associatedAt"] = 1_700_000_000,
                     ["ipAddress"] = "192.0.2.10",
                     ["isWired"] = false
                 }
@@ -155,6 +157,9 @@ public sealed class WifiDiagnosticsReadServiceTests
 
         var projectedClient = Assert.Single(response.Data!["clients"]!["data"]!.AsArray())!;
         Assert.Equal("6 GHz", projectedClient["association"]!["band"]!.GetValue<string>());
+        Assert.Equal(
+            "2023-11-14T22:13:20.0000000+00:00",
+            projectedClient["association"]!["associatedAt"]!.GetValue<string>());
         Assert.Equal(28d, projectedClient["signal"]!["snrDb"]!.GetValue<double>());
         Assert.Null(projectedClient["signal"]!["signalBalance"]);
         Assert.Null(projectedClient["network"]!["dhcpState"]);
@@ -172,8 +177,8 @@ public sealed class WifiDiagnosticsReadServiceTests
         var client = new DiagnosticsClient
         {
             Clients = new JsonArray(
-                new JsonObject { ["mac"] = "aa:bb:cc:dd:ee:01" },
-                new JsonObject { ["mac"] = "aa:bb:cc:dd:ee:02" }),
+                new JsonObject { ["mac"] = "aa:bb:cc:dd:ee:01", ["is_wired"] = false },
+                new JsonObject { ["mac"] = "aa:bb:cc:dd:ee:02", ["is_wired"] = false }),
             Devices = new JsonObject
             {
                 ["data"] = new JsonArray(
@@ -198,6 +203,171 @@ public sealed class WifiDiagnosticsReadServiceTests
         await Assert.ThrowsAsync<ConfigurationException>(() =>
             disabled.ReadAsync(SiteId, null, null, null, CancellationToken.None));
         Assert.Equal(0, disabledClient.PrivateReadCount);
+    }
+
+    [Fact]
+    public async Task Read_filters_nonwireless_records_before_applying_client_limit()
+    {
+        var client = new DiagnosticsClient
+        {
+            Clients = new JsonArray(
+                new JsonObject
+                {
+                    ["mac"] = "00:00:00:00:00:01",
+                    ["is_wired"] = true,
+                    ["name"] = "Wired"
+                },
+                new JsonObject
+                {
+                    ["mac"] = "ff:ff:ff:ff:ff:01",
+                    ["ap_mac"] = "11:22:33:44:55:66",
+                    ["signal"] = -60
+                },
+                new JsonObject
+                {
+                    ["mac"] = "00:00:00:00:00:02",
+                    ["name"] = "Unknown transport"
+                })
+        };
+        var service = CreateService(client, enabled: true);
+
+        var response = await service.ReadAsync(
+            SiteId,
+            null,
+            clientLimit: 1,
+            radioLimit: 1,
+            TestContext.Current.CancellationToken);
+
+        var clients = response.Data!["clients"]!;
+        var projected = Assert.Single(clients["data"]!.AsArray())!;
+        Assert.Equal("ff:ff:ff:ff:ff:01", projected["macAddress"]!.GetValue<string>());
+        Assert.Equal(1, clients["matched"]!.GetValue<int>());
+        Assert.False(clients["truncated"]!.GetValue<bool>());
+    }
+
+    [Fact]
+    public async Task Read_rejects_oversized_nested_radio_sources()
+    {
+        var radioTable = new JsonArray();
+        for (var index = 0; index < 17; index++)
+        {
+            radioTable.Add(new JsonObject
+            {
+                ["radio"] = $"radio-{index}",
+                ["channel"] = index + 1
+            });
+        }
+
+        var client = new DiagnosticsClient
+        {
+            Devices = new JsonObject
+            {
+                ["data"] = new JsonArray
+                {
+                    new JsonObject
+                    {
+                        ["mac"] = "11:22:33:44:55:66",
+                        ["radio_table"] = radioTable
+                    }
+                }
+            }
+        };
+        var service = CreateService(client, enabled: true);
+
+        var exception = await Assert.ThrowsAsync<ContractException>(() =>
+            service.ReadAsync(SiteId, null, null, null, TestContext.Current.CancellationToken));
+
+        Assert.Contains("radio_table", exception.Message, StringComparison.Ordinal);
+        Assert.Contains("16", exception.Message, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task Read_rejects_oversized_aggregate_radio_projection()
+    {
+        var devices = new JsonArray();
+        for (var deviceIndex = 0; deviceIndex < 126; deviceIndex++)
+        {
+            var radioTable = new JsonArray();
+            for (var radioIndex = 0; radioIndex < 16; radioIndex++)
+            {
+                radioTable.Add(new JsonObject
+                {
+                    ["radio"] = $"radio-{radioIndex}",
+                    ["channel"] = radioIndex + 1
+                });
+            }
+
+            devices.Add(new JsonObject
+            {
+                ["mac"] = $"02:00:00:00:{deviceIndex / 256:x2}:{deviceIndex % 256:x2}",
+                ["radio_table"] = radioTable
+            });
+        }
+
+        var client = new DiagnosticsClient
+        {
+            Devices = new JsonObject { ["data"] = devices }
+        };
+        var service = CreateService(client, enabled: true);
+
+        var exception = await Assert.ThrowsAsync<ContractException>(() =>
+            service.ReadAsync(SiteId, null, null, null, TestContext.Current.CancellationToken));
+
+        Assert.Contains("2000", exception.Message, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task Read_does_not_merge_anonymous_radio_arrays_by_position()
+    {
+        var client = new DiagnosticsClient
+        {
+            Devices = new JsonObject
+            {
+                ["data"] = new JsonArray
+                {
+                    new JsonObject
+                    {
+                        ["mac"] = "11:22:33:44:55:66",
+                        ["radio_table"] = new JsonArray
+                        {
+                            new JsonObject
+                            {
+                                ["channel"] = 1,
+                                ["tx_power"] = 10
+                            }
+                        },
+                        ["radio_table_stats"] = new JsonArray
+                        {
+                            new JsonObject
+                            {
+                                ["channel"] = 36,
+                                ["tx_power"] = 20,
+                                ["cu_total"] = 30
+                            }
+                        }
+                    }
+                }
+            }
+        };
+        var service = CreateService(client, enabled: true);
+
+        var response = await service.ReadAsync(
+            SiteId,
+            null,
+            null,
+            null,
+            TestContext.Current.CancellationToken);
+
+        var radios = response.Data!["accessPointRadios"]!["data"]!.AsArray();
+        Assert.Equal(2, radios.Count);
+        var configured = Assert.Single(radios, radio => radio!["configuredTransmitPowerDbm"] is not null)!;
+        Assert.Equal(1, configured["channel"]!.GetValue<int>());
+        Assert.Equal(10d, configured["configuredTransmitPowerDbm"]!.GetValue<double>());
+        Assert.Null(configured["effectiveTransmitPowerDbm"]);
+        var operational = Assert.Single(radios, radio => radio!["effectiveTransmitPowerDbm"] is not null)!;
+        Assert.Equal(36, operational["channel"]!.GetValue<int>());
+        Assert.Null(operational["configuredTransmitPowerDbm"]);
+        Assert.Equal(20d, operational["effectiveTransmitPowerDbm"]!.GetValue<double>());
     }
 
     private static JsonObject AccessPoint(
