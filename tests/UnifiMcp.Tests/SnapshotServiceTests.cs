@@ -121,7 +121,7 @@ public sealed class SnapshotServiceTests
 
             if (operationId == "getInfo")
             {
-                return Task.FromResult<JsonNode?>(new JsonObject { ["applicationVersion"] = "10.4.57" });
+                return Task.FromResult<JsonNode?>(new JsonObject { ["applicationVersion"] = "10.5.67" });
             }
 
             return Task.FromResult<JsonNode?>(new JsonObject

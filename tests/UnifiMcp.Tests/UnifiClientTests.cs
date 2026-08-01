@@ -13,7 +13,7 @@ public sealed class UnifiClientTests
     [Fact]
     public async Task Read_uses_tailscale_base_url_and_api_key_header()
     {
-        var handler = new RecordingHandler(_ => JsonResponse(HttpStatusCode.OK, "{\"version\":\"10.4.57\"}"));
+        var handler = new RecordingHandler(_ => JsonResponse(HttpStatusCode.OK, "{\"version\":\"10.5.67\"}"));
         using var client = CreateClient(handler);
         var request = Request("getInfo", requireRead: true);
 
@@ -23,6 +23,48 @@ public sealed class UnifiClientTests
         Assert.Equal("https://unifi.nutria-newton.ts.net/proxy/network/integration/v1/info", sent.Uri);
         Assert.Equal("test-api-key", sent.ApiKey);
         Assert.Equal("GET", sent.Method);
+    }
+
+    [Fact]
+    public async Task Controller_contract_probe_uses_only_the_fixed_authenticated_api_docs_resource()
+    {
+        var handler = new RecordingHandler(_ => JsonResponse(HttpStatusCode.OK, "{\"paths\":{}}"));
+        using var client = CreateClient(handler);
+
+        await client.GetFixedAsync("../api-docs/integration.json", CancellationToken.None);
+
+        var sent = Assert.Single(handler.Requests);
+        Assert.Equal("GET", sent.Method);
+        Assert.Equal(
+            "https://unifi.nutria-newton.ts.net/proxy/network/api-docs/integration.json",
+            sent.Uri);
+        Assert.Equal("test-api-key", sent.ApiKey);
+        Assert.Null(sent.Body);
+    }
+
+    [Theory]
+    [InlineData(true)]
+    [InlineData(false)]
+    public async Task Controller_contract_probe_rejects_an_oversized_response_before_parsing(
+        bool includeContentLength)
+    {
+        var oversized = new string('x', 2 * 1024 * 1024 + 1);
+        var content = new StringContent(oversized);
+        if (!includeContentLength)
+        {
+            content.Headers.ContentLength = null;
+        }
+
+        var handler = new RecordingHandler(_ => new HttpResponseMessage(HttpStatusCode.OK)
+        {
+            Content = content
+        });
+        using var client = CreateClient(handler);
+
+        var exception = await Assert.ThrowsAsync<ContractException>(() =>
+            client.GetFixedAsync("../api-docs/integration.json", CancellationToken.None));
+
+        Assert.Contains("2097152-byte safety limit", exception.Message, StringComparison.Ordinal);
     }
 
     [Fact]

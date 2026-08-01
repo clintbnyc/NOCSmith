@@ -6,13 +6,14 @@ namespace UnifiMcp.Contracts;
 
 public sealed class ContractProvider
 {
-    private static readonly string[] LocalContractPaths =
+    private static readonly ContractLocation[] LocalContractLocations =
     {
-        "openapi.json",
-        "v1/openapi.json",
-        "swagger.json",
-        "v1/swagger.json",
-        "api-docs"
+        new("../api-docs/integration.json", "/proxy/network/api-docs/integration.json"),
+        new("openapi.json", "/proxy/network/integration/openapi.json"),
+        new("v1/openapi.json", "/proxy/network/integration/v1/openapi.json"),
+        new("swagger.json", "/proxy/network/integration/swagger.json"),
+        new("v1/swagger.json", "/proxy/network/integration/v1/swagger.json"),
+        new("api-docs", "/proxy/network/integration/api-docs")
     };
 
     private readonly IUnifiClient _client;
@@ -65,17 +66,19 @@ public sealed class ContractProvider
             }
 
             LiveApplicationVersion = FindVersion(info);
-            foreach (var path in LocalContractPaths)
+            foreach (var location in LocalContractLocations)
             {
                 try
                 {
-                    var candidate = await _client.GetFixedAsync(path, cancellationToken).ConfigureAwait(false);
+                    var candidate = await _client.GetFixedAsync(location.RequestPath, cancellationToken).ConfigureAwait(false);
                     if (candidate is not JsonObject candidateObject || candidateObject["paths"] is not JsonObject)
                     {
                         continue;
                     }
 
-                    var contract = OpenApiContract.Parse(candidateObject.ToJsonString(), "controller:" + path);
+                    var contract = OpenApiContract.Parse(
+                        candidateObject.ToJsonString(),
+                        "controller:" + location.SourcePath);
                     if (!string.IsNullOrWhiteSpace(LiveApplicationVersion) &&
                         !string.Equals(contract.Version, LiveApplicationVersion, StringComparison.Ordinal))
                     {
@@ -86,12 +89,18 @@ public sealed class ContractProvider
 
                     Current = contract;
                     LastProbeWarning = null;
-                    _logger.LogInformation("Loaded UniFi Network {Version} contract from {Path}.", contract.Version, path);
+                    _logger.LogInformation(
+                        "Loaded UniFi Network {Version} contract from {Path}.",
+                        contract.Version,
+                        location.SourcePath);
                     return;
                 }
                 catch (Exception exception) when (exception is UnifiApiException or ContractException or HttpRequestException or TaskCanceledException)
                 {
-                    _logger.LogDebug("UniFi contract probe path {Path} was unavailable: {Message}", path, exception.Message);
+                    _logger.LogDebug(
+                        "UniFi contract probe path {Path} was unavailable: {Message}",
+                        location.SourcePath,
+                        exception.Message);
                 }
             }
 
@@ -125,4 +134,6 @@ public sealed class ContractProvider
 
         return null;
     }
+
+    private sealed record ContractLocation(string RequestPath, string SourcePath);
 }

@@ -173,7 +173,7 @@ configuration and automation therefore continue to work without migration.
 
 - Runtime: .NET 10
 - MCP transports: stdio and stateless Streamable HTTP
-- Embedded fallback contract: UniFi Network 10.4.57
+- Embedded fallback contract: UniFi Network 10.5.67
 - Local API: official Network Integration API over validated HTTPS
 - Optional cloud API: UniFi Site Manager stable v1, read-only
 - Journal: SQLite WAL on a private local filesystem

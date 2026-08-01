@@ -76,6 +76,12 @@ deployment.
 8. Upstream failure, rate limiting, and hostile data sizes remain bounded and
    do not cause unsafe retries or uncontrolled resource use.
 
+The private history feed can include a MAC-less `TELEPORT` pseudo-client. It is
+not treated as a client identity or persisted: the connector suppresses only
+that exact type, reports the count, and continues to fail closed for any other
+missing or malformed MAC. This avoids inventing a join key while preserving
+validated MAC-keyed observations.
+
 ## Threat Model, Trust Boundaries, and Assumptions
 
 ### Actors and capabilities
@@ -128,7 +134,11 @@ chain threat rather than ordinary MCP input.
    operator-controlled but must be absolute HTTPS, contain no credentials,
    query, or fragment, and end in `/proxy/network/integration`. Normal
    certificate and hostname validation is required. The connector sends the
-   Integration API key and consumes untrusted JSON responses.
+   Integration API key and consumes untrusted JSON responses. Contract
+   discovery may also read the fixed same-origin sibling resource
+   `/proxy/network/api-docs/integration.json`; caller input cannot select that
+   path or another controller resource, and contract responses are capped at
+   2 MiB before JSON parsing.
 4. **Connector to UniFi Site Manager.** The origin is fixed to
    `https://api.ui.com`; a separate optional key is used. Only stable-v1
    inventory and ISP-metric reads are intended.
@@ -261,6 +271,14 @@ compromised controller could still publish a malicious same-version contract.
 Reviews should ensure such a contract cannot create arbitrary-origin requests,
 inject headers, bypass preview/apply, or cause unsafe schema complexity. The
 reviewed embedded contract must remain the fail-closed fallback.
+
+The embedded update workflow may ingest an official contract downloaded from
+the authenticated local documentation because the public developer download
+can lag a Network release. The updater validates the exact requested version
+and replaces controller-specific `servers` metadata before vendoring it, so a
+live controller address is not committed. Runtime request origins continue to
+come only from validated `UNIFI_BASE_URL`; OpenAPI `servers` entries are not
+used for request routing.
 
 Classic SQL injection is low relevance for upstream reads because the
 connector does not build SQL from MCP values for controller access. SSRF,

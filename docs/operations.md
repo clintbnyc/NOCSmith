@@ -26,7 +26,7 @@ calibration used during security reviews.
 - Streamable HTTP defaults to bearer authentication. The Pinode profile trusts `Tailscale-User-Login` only on a Unix socket inside a `0700` directory owned by the non-root container user. Tailscale Serve runs as root, injects the authenticated tailnet identity, and can connect to that socket; unprivileged local host processes cannot. Tailscale 1.98.9 or newer is required because it restricts Unix-socket Serve targets to root.
 - HTTP requests must use the configured public `Host`; a supplied `Origin` must match the same HTTPS authority. MCP responses are marked `Cache-Control: no-store`.
 - HTTPS uses the platform/.NET trust store plus hostname validation. Local stdio uses `unifi.nutria-newton.ts.net`; the Pinode container uses the LAN certificate name `unifi.webbman.nyc` and mounts Pinode's trusted CA bundle read-only. There is no certificate-validation override and no direct-IP fallback.
-- Every normal API operation must exist in the loaded OpenAPI contract. Optional private access is separately constrained to GET `stat/device`, GET `v2/api/site/{site}/clients/active?includeTrafficUsage=true&includeUnifiDevices=true`, GET `v2/api/site/{site}/clients/history?onlyNonBlocked=true&includeUnifiDevices=true&withinHours={bounded-value}`, GET `v2/api/site/{site}/network-members-groups`, and an empty-body query-style POST to `v2/api/site/{site}/system-log/all`. The System Logs POST is a read operation used by Network 10.4.57 and accepts no caller-supplied body. The history GET accepts only the six time-bounded values used by the authenticated Network 10.4.57 UI. Arbitrary private URLs, methods, query keys, and writes are rejected.
+- Every normal API operation must exist in the loaded OpenAPI contract. Optional private access is separately constrained to GET `stat/device`, GET `v2/api/site/{site}/clients/active?includeTrafficUsage=true&includeUnifiDevices=true`, GET `v2/api/site/{site}/clients/history?onlyNonBlocked=true&includeUnifiDevices=true&withinHours={bounded-value}`, GET `v2/api/site/{site}/network-members-groups`, and an empty-body query-style POST to `v2/api/site/{site}/system-log/all`. The System Logs POST is a read operation used by Network 10.5.67 and accepts no caller-supplied body. The history GET accepts only the six time-bounded values used by the authenticated Network 10.5.67 UI. Arbitrary private URLs, methods, query keys, and writes are rejected.
 - Site Manager permits only stable `/v1` host, site, device, and ISP-metric reads. Early Access, SD-WAN, Cloud Connector proxying, arbitrary URLs, and Site Manager writes are rejected.
 - Responses, exceptions, snapshots, and previews are recursively redacted. Wi-Fi credentials, API keys, tokens, passwords, pre-shared keys, and hotspot voucher codes are never returned.
 - Read operations retry 429, transient HTTP failures, and timeouts, including the fixed query-style System Logs POST. Mutations are sent exactly once and are never automatically retried.
@@ -86,7 +86,7 @@ Set `UNIFI_ENABLE_LEGACY_READ_ENRICHMENT=true` only when port labels, STP-relate
 Raw private responses, VLAN/network identifiers, authentication material, device keys, traffic counters, and all other fields are discarded before tool output is built. Selected free text is passed through the connector's secret redactor, including inline password, token, API-key, PSK, and private-key patterns. Enrichment failures are reported under `_connector.legacyReadEnrichment` without failing the official read.
 
 `unifi_clients` action `history` is a separate, opt-in read and does not change
-the `list` or `get` actions. Network `10.4.57`'s authenticated client UI was
+the `list` or `get` actions. Network `10.5.67`'s authenticated client UI was
 verified to issue the fixed GET:
 
 ```text
@@ -102,6 +102,13 @@ validated object-record contract. Official current-client pages must also
 match their declared count, offset, limit, and total count; incomplete or
 contradictory pagination fails closed rather than risking a false offline
 classification.
+
+Network `10.5.67` may include a `TELEPORT` pseudo-client without a MAC address
+in the bounded history response. Because history reconciliation and the journal
+use MAC addresses as their only client join key, the connector counts and
+suppresses exactly those MAC-less `TELEPORT` records. Any other missing,
+malformed, or duplicate MAC still fails the history source closed. Tool,
+collection, and doctor metadata report the suppression count.
 
 The response keeps three data grains visibly separate:
 
@@ -123,14 +130,15 @@ Per-field provenance identifies the source, authority, and availability of
 every projected data field, including derived and unavailable values. Metadata
 reports requested and effective windows, source collections,
 per-classification pagination, truncation, safety limits, online/offline
-counts, missing-field counts, exact audit scope, and limitations. A missing
+counts, suppressed MAC-less `TELEPORT` records, missing-field counts, exact
+audit scope, and limitations. A missing
 endpoint or unrecognized history, current-client, or group response returns
 `status: notSupported` with empty client arrays and identifies the exact
 failing source; raw private records are never returned.
 
 `unifi_client_groups` separately sends a fixed GET to
-`/proxy/network/v2/api/site/{site}/network-members-groups`. Network `10.4.57`
-was live-verified to accept the existing Integration API key and return 12
+`/proxy/network/v2/api/site/{site}/network-members-groups`. Network `10.5.67`
+was live-verified to accept the existing Integration API key and return 14
 configured groups with group ID, name, type, and member MAC addresses. The
 `list` action returns projected group definitions and can optionally include
 the member MAC addresses. The `audit` action joins those memberships to the
@@ -296,7 +304,7 @@ Overlap is skipped safely, all operational errors are redacted, and the next
 normal interval remains scheduled. Retention and size enforcement use the same
 transactional journal rules described above.
 
-`unifi_alerts` separately sends `{}` to `/proxy/network/v2/api/site/{site}/system-log/all`. Although the endpoint uses POST, it is a read-only collection query: callers cannot supply a body, path, or method. Network 10.4.57 was live-verified to accept the existing Integration API key and return up to 50 records with pagination metadata. The projection preserves controller-supplied event/key, raw description/title, severity, status, category/subcategory, type, target, timestamp, and a small allowlist from `parameters`, including IP address, affected clients, learn-more reference, object, console, count, platform, section, and administrator identifiers. Raw parameter objects and unrelated fields are discarded.
+`unifi_alerts` separately sends `{}` to `/proxy/network/v2/api/site/{site}/system-log/all`. Although the endpoint uses POST, it is a read-only collection query: callers cannot supply a body, path, or method. Network 10.5.67 was live-verified to accept the existing Integration API key and return up to 50 records with pagination metadata. The projection preserves controller-supplied event/key, raw description/title, severity, status, category/subcategory, type, target, timestamp, and a small allowlist from `parameters`, including IP address, affected clients, learn-more reference, object, console, count, platform, section, and administrator identifiers. Raw parameter objects and unrelated fields are discarded.
 
 The projected STP values are controller-native evidence, not a normalized UniFi UI role. Live verification found no reliable direct field for the UI's **Edge** versus **Participant** column, and `stpState`, `isUplink`, `stpPortMode`, and `settingPreference` are not individually or collectively treated as a safe mapping. The enrichment therefore reports `normalizedUiStpRole.status` as `unavailable` and does not emit `uiStpRole`.
 
@@ -466,19 +474,25 @@ can require conservative approval.
 
 ## OpenAPI contract
 
-The repository vendors Ubiquiti Network OpenAPI `10.4.57`, matching the active Network application, with 41 GET and 32 write operations. At startup the connector reads `/v1/info` and probes controller-local contract locations. It uses a controller contract only when its version matches the live Network application; otherwise it remains restricted to the reviewed embedded contract. Capabilities, read-response metadata, snapshots, and `doctor` report the machine-readable contract status.
+The repository vendors Ubiquiti Network OpenAPI `10.5.67`, matching the active Network application, with 41 GET and 32 write operations. At startup the connector reads `/v1/info` and first probes the authenticated controller document at `/proxy/network/api-docs/integration.json`, followed by older integration-relative contract locations. Controller contract responses are capped at 2 MiB. It uses a controller contract only when its version matches the live Network application; otherwise it remains restricted to the reviewed embedded contract. Capabilities, read-response metadata, snapshots, and `doctor` report the machine-readable contract status.
 
-The official `10.4.57` adopted-device schema still does not expose custom switch-port labels or STP-related state and configuration fields. The connector detects these capabilities from response-schema paths instead of hard-coding a version. Missing fields are reported with `source`, `scope`, `resolutionStatus`, `resolvedBy`, and `stillMissing` metadata. Successful legacy enrichment resolves labels and the projected STP-related fields separately under `_connector.legacyReadEnrichment`; the normalized UniFi UI Edge/Participant role remains explicitly unresolved.
+The `10.5.67` review found the same 73 method/path operations and 379 component schemas as `10.4.57`. Its semantic schema changes correct recursive filter-expression references and add the `SHELLY` classification; it does not add official client history, client groups, System Logs, device/client notes, custom switch-port labels, STP details, or the RF/DHCP fields used by Wi-Fi diagnostics. Those adapters therefore remain private, opt-in, projected, and provenance-labelled. The connector detects adopted-device label and STP capabilities from response-schema paths instead of hard-coding a version. Missing fields are reported with `source`, `scope`, `resolutionStatus`, `resolvedBy`, and `stillMissing` metadata. Successful legacy enrichment resolves labels and the projected STP-related fields separately under `_connector.legacyReadEnrichment`; the normalized UniFi UI Edge/Participant role remains explicitly unresolved.
 
 Refresh is an explicit review step:
 
 ```sh
-./scripts/update-openapi.sh 10.4.57
+./scripts/update-openapi.sh 10.5.67 /absolute/path/to/openapi.json
 dotnet test UnifiMcp.slnx
 git diff -- contracts/unifi-network.openapi.json
 ```
 
-Supply the reviewed published version to the script. Do not silently refresh the contract at runtime.
+The second argument can be an HTTPS URL or a local file downloaded from
+Network's authenticated Integrations documentation. Omit it only when the
+matching `developer.ui.com` versioned download is available. The script
+validates the requested version, replaces deployment-specific server metadata
+with stable generic UniFi server templates, and preserves existing key order
+before vendoring the document. Supply only a reviewed official contract. Do
+not silently refresh the embedded contract at runtime.
 
 ## Codex registration
 

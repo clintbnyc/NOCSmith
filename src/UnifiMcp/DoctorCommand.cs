@@ -339,6 +339,8 @@ public static class DoctorCommand
                 ["historyHours"] = data["historyWindow"]?["effectiveHours"]?.DeepClone(),
                 ["onlineRecords"] = data["counts"]?["online"]?.DeepClone(),
                 ["offlineRecordsWithinWindow"] = data["counts"]?["offlineWithinWindow"]?.DeepClone(),
+                ["maclessTeleportRecordsSuppressed"] =
+                    data["counts"]?["maclessTeleportRecordsSuppressed"]?.DeepClone(),
                 ["groupMembersWithoutHistoryRecords"] =
                     data["counts"]?["groupMembersWithoutHistory"]?.DeepClone(),
                 ["source"] = "private-v2-client-history-api",

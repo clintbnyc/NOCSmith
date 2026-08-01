@@ -99,7 +99,7 @@ public sealed class SystemLogReadService
         ["queryStylePost"] = true,
         ["authentication"] = "existing X-API-Key",
         ["fixedResource"] = "v2/api/site/{site}/system-log/all",
-        ["verifiedApplicationVersion"] = "10.4.57",
+        ["verifiedApplicationVersion"] = "10.5.67",
         ["rawPrivateResponsesReturned"] = false,
         ["defaultLimit"] = DefaultLimit,
         ["maximumLimit"] = MaximumLimit
