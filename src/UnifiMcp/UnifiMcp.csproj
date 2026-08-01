@@ -4,7 +4,11 @@
     <TargetFramework>net10.0</TargetFramework>
     <AssemblyName>unifi-mcp</AssemblyName>
     <RootNamespace>UnifiMcp</RootNamespace>
-    <Version>1.1.0</Version>
+    <Version>1.2.0</Version>
+    <Product>NOCsmith</Product>
+    <Title>NOCsmith by Clint</Title>
+    <Description>NOCsmith is a security-first Model Context Protocol server for operating and understanding UniFi Network.</Description>
+    <RepositoryUrl>https://github.com/Webbman-nyc/unifi-mcp</RepositoryUrl>
   </PropertyGroup>
 
   <ItemGroup>

@@ -46,7 +46,7 @@ public static class JournalCommand
         }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
         {
-            Console.Error.WriteLine("UniFi MCP journal collection cancelled.");
+            Console.Error.WriteLine("NOCsmith journal collection cancelled.");
             return ErrorExitCode;
         }
         catch (Exception exception) when (IsHandledFailure(exception))
@@ -56,7 +56,7 @@ public static class JournalCommand
                 Environment.GetEnvironmentVariable("UNIFI_SITE_API_KEY"),
                 Environment.GetEnvironmentVariable("UNIFI_MCP_HTTP_BEARER_TOKEN"));
             Console.Error.WriteLine(
-                "UniFi MCP journal collection failed: " +
+                "NOCsmith journal collection failed: " +
                 redactor.Redact(exception.Message));
             return ExitCodeForException(exception);
         }

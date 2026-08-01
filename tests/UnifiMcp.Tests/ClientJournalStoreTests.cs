@@ -287,6 +287,27 @@ public sealed class ClientJournalStoreTests
     }
 
     [Fact]
+    public async Task Dangling_symlink_database_path_is_rejected_without_creating_target()
+    {
+        if (OperatingSystem.IsWindows())
+        {
+            return;
+        }
+
+        using var directory = TemporaryPrivateDirectory.Create();
+        var target = Path.Combine(directory.Path, "missing-target.db");
+        var link = Path.Combine(directory.Path, "journal.db");
+        File.CreateSymbolicLink(link, target);
+        var store = new ClientJournalStore(Configuration(link, enabled: true));
+
+        await Assert.ThrowsAsync<ConfigurationException>(
+            () => store.InitializeAsync(TestContext.Current.CancellationToken));
+
+        Assert.False(File.Exists(target));
+        Assert.NotNull(new FileInfo(link).LinkTarget);
+    }
+
+    [Fact]
     public async Task Nonlocal_filesystem_is_rejected_before_database_creation()
     {
         using var directory = TemporaryPrivateDirectory.Create();

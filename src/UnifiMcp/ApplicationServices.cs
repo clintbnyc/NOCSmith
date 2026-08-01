@@ -36,6 +36,7 @@ public static class ApplicationServices
         services.AddSingleton<SiteManagerReadService>();
         services.AddSingleton<SiteManagerDeviceEnrichmentService>();
         services.AddSingleton<ClientGroupReadService>();
+        services.AddSingleton<WifiDiagnosticsReadService>();
         services.AddSingleton<ClientHistoryReadService>();
         services.AddSingleton<IClientJournalClock, SystemClientJournalClock>();
         services.AddSingleton<IClientCollectionIdGenerator, GuidClientCollectionIdGenerator>();
@@ -60,13 +61,14 @@ public static class ApplicationServices
         options.ServerInfo = new Implementation
         {
             Name = "unifi-mcp",
-            Title = "UniFi Network MCP Connector",
-            Version = "1.1.0",
-            Description = "Private, contract-validated UniFi Network access with optional read-only Site Manager enrichment and an opt-in projected client observation journal."
+            Title = "NOCsmith by Clint",
+            Version = "1.2.0",
+            Description = "Security-first UniFi Network intelligence for inventory, diagnostics, history, and confirmation-bound changes."
         };
         options.ServerInstructions =
             "Use unifi_get_site_snapshot for reviews and grouped read tools for normal queries. " +
             "Use unifi_get_capabilities before generic operations. Every mutation must be previewed first. " +
+            "Use unifi_wifi_diagnostics for bounded current client RF, DHCP/APIPA, and access-point radio telemetry. " +
             "Use unifi_site_manager and unifi_isp_metrics for read-only fleet and ISP history. " +
             "Client journal collection is a local write and never changes the controller; journal recovery requires the exact current health fingerprint. " +
             "Never call unifi_apply_change until the user explicitly approves the exact preview; tokens are single-use, expire after five minutes, and are invalidated by state drift. " +

@@ -10,7 +10,7 @@ try
 }
 catch (ConfigurationException exception)
 {
-    Console.Error.WriteLine("UniFi MCP configuration error: " + exception.Message);
+    Console.Error.WriteLine("NOCsmith configuration error: " + exception.Message);
     return 2;
 }
 
@@ -39,7 +39,7 @@ if (applicationArgs.Length > 0 &&
     }
     catch (ConfigurationException exception)
     {
-        Console.Error.WriteLine("UniFi MCP configuration error: " + exception.Message);
+        Console.Error.WriteLine("NOCsmith configuration error: " + exception.Message);
         return 2;
     }
 }
@@ -60,6 +60,6 @@ try
 }
 catch (ConfigurationException exception)
 {
-    Console.Error.WriteLine("UniFi MCP configuration error: " + exception.Message);
+    Console.Error.WriteLine("NOCsmith configuration error: " + exception.Message);
     return 2;
 }

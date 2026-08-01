@@ -1375,7 +1375,8 @@ public sealed class ClientJournalStore
                 "The client journal parent directory must be private (0700 or stricter).");
         }
 
-        if (File.Exists(path))
+        var databaseEntry = new FileInfo(path);
+        if (databaseEntry.Exists || databaseEntry.LinkTarget is not null)
         {
             ValidateNoSymlink(path, isDirectory: false);
         }
