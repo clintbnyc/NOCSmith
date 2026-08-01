@@ -63,7 +63,7 @@ public static class ApplicationServices
             Name = "unifi-mcp",
             Title = "UniFi Network MCP Connector",
             Version = "1.2.0",
-            Description = "Private, contract-validated UniFi Network access with optional read-only Site Manager enrichment and an opt-in projected client observation journal."
+            Description = "Security-first UniFi Network MCP access for inventory, diagnostics, history, and confirmation-bound changes."
         };
         options.ServerInstructions =
             "Use unifi_get_site_snapshot for reviews and grouped read tools for normal queries. " +

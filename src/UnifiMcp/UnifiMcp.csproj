@@ -5,6 +5,8 @@
     <AssemblyName>unifi-mcp</AssemblyName>
     <RootNamespace>UnifiMcp</RootNamespace>
     <Version>1.2.0</Version>
+    <Description>A security-first Model Context Protocol server for operating and understanding UniFi Network.</Description>
+    <RepositoryUrl>https://github.com/Webbman-nyc/unifi-mcp</RepositoryUrl>
   </PropertyGroup>
 
   <ItemGroup>
