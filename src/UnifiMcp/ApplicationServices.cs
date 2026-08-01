@@ -61,9 +61,9 @@ public static class ApplicationServices
         options.ServerInfo = new Implementation
         {
             Name = "unifi-mcp",
-            Title = "UniFi Network MCP Connector",
+            Title = "CLINT — Controlled LAN Intelligence & Network Toolkit",
             Version = "1.2.0",
-            Description = "Security-first UniFi Network MCP access for inventory, diagnostics, history, and confirmation-bound changes."
+            Description = "Security-first UniFi Network intelligence for inventory, diagnostics, history, and confirmation-bound changes."
         };
         options.ServerInstructions =
             "Use unifi_get_site_snapshot for reviews and grouped read tools for normal queries. " +

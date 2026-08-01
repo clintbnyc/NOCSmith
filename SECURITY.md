@@ -1,6 +1,6 @@
 # Security Policy
 
-UniFi MCP is built for private, operator-controlled network access. Security
+CLINT is built for private, operator-controlled network access. Security
 issues can affect controller credentials, household or organizational network
 metadata, managed network configuration, and the host that runs the connector.
 Please report suspected vulnerabilities privately.

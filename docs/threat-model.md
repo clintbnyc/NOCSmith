@@ -1,4 +1,4 @@
-# UniFi MCP Threat Model
+# CLINT Threat Model
 
 For supported versions and private vulnerability reporting, see the
 [security policy](../SECURITY.md).
@@ -16,9 +16,9 @@ boundary, or materially different secret-handling path.
 
 ## Overview
 
-`unifi-mcp` is a private .NET 10 Model Context Protocol connector for a UniFi
-Network controller and, optionally, the UniFi Site Manager stable-v1 API. It
-turns MCP tool calls into:
+CLINT, whose stable technical runtime identifier is `unifi-mcp`, is a private
+.NET 10 Model Context Protocol connector for a UniFi Network controller and,
+optionally, the UniFi Site Manager stable-v1 API. It turns MCP tool calls into:
 
 - reads and writes defined by a reviewed or controller-supplied UniFi Network
   OpenAPI contract;
