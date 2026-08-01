@@ -30,6 +30,7 @@ public static class UnifiTools
         SiteManagerReadService siteManager,
         SiteManagerDeviceEnrichmentService siteManagerEnrichment,
         ClientGroupReadService clientGroups,
+        WifiDiagnosticsReadService wifiDiagnostics,
         ClientHistoryReadService clientHistory,
         ClientJournalService clientJournal,
         SystemLogReadService systemLogs,
@@ -72,6 +73,7 @@ public static class UnifiTools
                 ["siteManager"] = siteManagerDescription,
                 ["siteManagerDeviceEnrichment"] = siteManagerEnrichment.Describe(),
                 ["clientGroups"] = clientGroups.Describe(),
+                ["wifiDiagnostics"] = wifiDiagnostics.Describe(),
                 ["clientHistory"] = clientHistory.Describe(),
                 ["clientJournal"] = clientJournal.Describe(),
                 ["systemLogs"] = systemLogs.Describe(),
@@ -196,6 +198,28 @@ public static class UnifiTools
         [Description("Include the configured member MAC addresses for each group. Defaults to false.")] bool includeMembers = false,
         CancellationToken cancellationToken = default) =>
         Guard(() => clientGroups.ReadAsync(action, siteId, includeMembers, cancellationToken));
+
+    [McpServerTool(
+        Name = "unifi_wifi_diagnostics",
+        Title = "Read current Wi-Fi client and radio diagnostics",
+        ReadOnly = true,
+        Destructive = false,
+        OpenWorld = false,
+        UseStructuredContent = true)]
+    [Description("Read bounded, allowlisted current client RF/DHCP and access-point radio diagnostics from two fixed private resources. Unavailable version-specific fields are null; raw controller responses are never returned.")]
+    public static Task<ToolResponse> WifiDiagnostics(
+        WifiDiagnosticsReadService diagnostics,
+        [Description("Optional site UUID. Omit when exactly one site is available or UNIFI_DEFAULT_SITE_ID is set.")] string? siteId = null,
+        [Description("Optional colon-delimited client MAC filter.")] string? clientMacAddress = null,
+        [Description("Maximum clients to return, from 1 to 200. Defaults to 100.")] int? clientLimit = null,
+        [Description("Maximum access-point radios to return, from 1 to 100. Defaults to 50.")] int? radioLimit = null,
+        CancellationToken cancellationToken = default) =>
+        Guard(() => diagnostics.ReadAsync(
+            siteId,
+            clientMacAddress,
+            clientLimit,
+            radioLimit,
+            cancellationToken));
 
     [McpServerTool(
         Name = "unifi_collect_client_observations",

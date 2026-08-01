@@ -71,7 +71,7 @@ From the Environment's **Destinations** tab, configure a local `.env` file at th
 
 The path is ignored by Git. 1Password mounts it as an in-memory FIFO and prompts for authorization when the connector reads it. Do not leave the mounted file open in an editor because local Environment files are not designed for concurrent readers. There is intentionally no service-account or plaintext fallback.
 
-Set `UNIFI_ENABLE_LEGACY_READ_ENRICHMENT=true` only when port labels, STP-related state/configuration fields, device/client notes and comments, bounded client history, client-group membership, or System Log events are needed. The legacy-named variable is retained for configuration compatibility and gates all five private resources. The same `X-API-Key` is used; no administrator username/password session or browser cookie is introduced. The enrichment adapter reads devices from the fixed legacy `/proxy/network/api/s/{site}/stat/device` resource and active clients from the fixed private `/proxy/network/v2/api/site/{site}/clients/active?includeTrafficUsage=true&includeUnifiDevices=true` resource, joins records by MAC address, and returns only:
+Set `UNIFI_ENABLE_LEGACY_READ_ENRICHMENT=true` only when port labels, STP-related state/configuration fields, device/client notes and comments, bounded client history, client-group membership, current Wi-Fi diagnostics, or System Log events are needed. The legacy-named variable is retained for configuration compatibility and gates all five private resources. The same `X-API-Key` is used; no administrator username/password session or browser cookie is introduced. The enrichment adapter reads devices from the fixed legacy `/proxy/network/api/s/{site}/stat/device` resource and active clients from the fixed private `/proxy/network/v2/api/site/{site}/clients/active?includeTrafficUsage=true&includeUnifiDevices=true` resource, joins records by MAC address, and returns only:
 
 - device/client IDs and MAC addresses needed to identify projected records;
 - port index, custom label, controller-native STP-related state and configuration fields, uplink flag, and selected STP mode fields;
@@ -133,6 +133,34 @@ assignment. Because the official contract exposes connected clients rather
 than complete offline history, the audit explicitly does not claim to identify
 ungrouped offline clients. No client-group create, update, reorder, or delete
 operation is exposed.
+
+### Current Wi-Fi diagnostics
+
+`unifi_wifi_diagnostics` reads only the fixed active-client and `stat/device`
+resources named above. It returns at most 200 clients and 100 AP-radio records
+(defaults: 100 and 50), with an optional exact client-MAC filter. The response
+is a fresh current-state projection; it does not read or extend the client
+journal.
+
+The explicit client allowlist covers controller-reported AP/radio association,
+band, channel and width, RSSI, noise floor, SNR, signal quality and Signal
+Balance classification, PHY rates, MCS/NSS/MIMO, Wi-Fi standard, bounded
+retry/error counters or rates, association/roam evidence, power-save state,
+and DHCP lease/failure/APIPA state. The AP-radio allowlist combines configured
+`radio_table` fields with effective and operational `radio_table_stats` fields,
+including transmit power, channel/width, utilization, interference, noise,
+station count, and retry/error telemetry. This lets one response correlate an
+associated client's signal with its AP and compare current conditions across
+AP radios.
+
+Every supported field is present with `null` when the controller or firmware
+does not expose a recognized version-specific alias. Direct SNR takes
+precedence; otherwise SNR is derived only when both RSSI and noise are present.
+APIPA is derived from a validated `169.254.0.0/16` IPv4 address only when the
+controller provides no direct APIPA field. `_connector` identifies both fixed
+sources, configured-versus-operational radio provenance, derivations, limits,
+redaction, and version-drift behavior. Unknown fields and raw private responses
+are discarded.
 
 This deployment currently has no adopted UniFi gateway or UniFi access points.
 Clients seen through eero and the managed switch may therefore lack direct
@@ -382,17 +410,17 @@ Rollback is failure-domain specific:
 
 ## MCP tools
 
-The server exposes 35 tools:
+The server exposes 36 tools:
 
 - Discovery, snapshots, and fleet data: `unifi_get_capabilities`, `unifi_get_site_snapshot`, `unifi_site_manager`, `unifi_isp_metrics`
-- Grouped reads: `unifi_sites`, `unifi_devices`, `unifi_clients`, `unifi_client_groups`, `unifi_alerts`, `unifi_networks`, `unifi_wifi`, `unifi_hotspot`, `unifi_firewall`, `unifi_acl`, `unifi_switching`, `unifi_dns`, `unifi_traffic_lists`, `unifi_supporting_resources`
+- Grouped reads: `unifi_sites`, `unifi_devices`, `unifi_clients`, `unifi_client_groups`, `unifi_wifi_diagnostics`, `unifi_alerts`, `unifi_networks`, `unifi_wifi`, `unifi_hotspot`, `unifi_firewall`, `unifi_acl`, `unifi_switching`, `unifi_dns`, `unifi_traffic_lists`, `unifi_supporting_resources`
 - Contract-defined read escape hatch: `unifi_read_operation`
 - Client journal: `unifi_collect_client_observations`, `unifi_client_changes`, `unifi_client_observation_history`, `unifi_client_journal_health`, `unifi_recover_client_journal`
 - Domain previews: `unifi_preview_device_change`, `unifi_preview_client_change`, `unifi_preview_network_change`, `unifi_preview_wifi_change`, `unifi_preview_hotspot_change`, `unifi_preview_firewall_change`, `unifi_preview_acl_change`, `unifi_preview_dns_change`, `unifi_preview_traffic_list_change`
 - Contract-defined write preview: `unifi_preview_operation`
 - Confirmed apply: `unifi_apply_change`
 
-Official read tools support the contract's offset, limit, and filter parameters. Page responses include `_connector.truncated`; when true, request another page. `unifi_clients` actions `list` and `get` retain the official connected-client semantics; action `history` is the distinct bounded private classification described above and accepts `historyHours`, `offset`, and `limit`. `unifi_client_groups` supports `list` and `audit`; `includeMembers=true` includes projected configured member MAC addresses. The group audit remains connected-only and does not silently become a history audit. `unifi_alerts` accepts a local 1-50 limit over the first System Logs page and reports the controller's page and total counts. Set `includeRead=false` to retain only records whose direct controller status is `NEW`; no meaning is inferred for other status values. Read responses also include observation/source metadata when their response shape can carry it. Device-detail and client responses include `_connector.contract` and `_connector.knownLimitations` when response coverage needs explanation. A site is auto-selected only if exactly one exists or `UNIFI_DEFAULT_SITE_ID` is configured.
+Official read tools support the contract's offset, limit, and filter parameters. Page responses include `_connector.truncated`; when true, request another page. `unifi_clients` actions `list` and `get` retain the official connected-client semantics; action `history` is the distinct bounded private classification described above and accepts `historyHours`, `offset`, and `limit`. `unifi_client_groups` supports `list` and `audit`; `includeMembers=true` includes projected configured member MAC addresses. The group audit remains connected-only and does not silently become a history audit. `unifi_wifi_diagnostics` accepts bounded client/radio limits plus an optional exact client MAC and returns nullable, version-aware RF and DHCP/APIPA projections from fixed private resources. `unifi_alerts` accepts a local 1-50 limit over the first System Logs page and reports the controller's page and total counts. Set `includeRead=false` to retain only records whose direct controller status is `NEW`; no meaning is inferred for other status values. Read responses also include observation/source metadata when their response shape can carry it. Device-detail and client responses include `_connector.contract` and `_connector.knownLimitations` when response coverage needs explanation. A site is auto-selected only if exactly one exists or `UNIFI_DEFAULT_SITE_ID` is configured.
 
 `unifi_site_manager` actions are `hosts`, `host`, `sites`, and `devices`. List actions use `pageSize` from 1 to 500 and return an opaque `pagination.continuation`; pass it back as `nextToken` for the next call. `host` requires `hostId`; `devices` optionally filters by host. `unifi_isp_metrics` accepts interval `5m` or `1h`, duration `24h` for 5-minute metrics, duration `7d` or `30d` for hourly metrics, or explicit RFC3339 timestamps. Optional targeted queries accept an array of `{ hostId, siteId, beginTimestamp?, endTimestamp? }`.
 
