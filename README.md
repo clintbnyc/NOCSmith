@@ -31,16 +31,17 @@ connection.
 This project is designed for private, operator-controlled deployments. It is
 not affiliated with or endorsed by Ubiquiti.
 
-## Why it is different
+## Network superpowers
 
-| Capability | What you get |
+| Mission | What UniFi MCP does |
 | --- | --- |
-| Network intelligence | Sites, devices, clients, networks, Wi-Fi, firewall, ACL, DNS, switching, VPN, WAN, vouchers, traffic lists, and recommendation-oriented snapshots |
-| Wi-Fi diagnostics | Client/AP association, RSSI, SNR, noise, PHY rates, MCS/NSS, retries, channel conditions, power, roaming, and DHCP/APIPA evidence |
-| Client history | Bounded current/history/group reconciliation plus an optional local SQLite observation journal with source-aware change semantics |
-| Fleet visibility | Optional read-only Site Manager hosts, sites, devices, firmware/update state, and ISP history |
-| Safe changes | Exact preview → short-lived confirmation → drift check → single apply; mutations are never retried automatically |
-| Flexible transport | Local stdio or authenticated stateless Streamable HTTP, including a hardened Tailscale Serve profile |
+| Map the control plane | Builds source-aware snapshots across sites, devices, clients, networks, Wi-Fi, switching, firewall, ACL, DNS, VPN, WAN, vouchers, and traffic policy |
+| Hunt RF ghosts | Correlates a client with its AP and radio, then exposes RSSI, SNR, noise, PHY rates, MCS/NSS, retries, channel utilization, transmit power, roaming, and DHCP/APIPA evidence |
+| Reconstruct client timelines | Reconciles authoritative current state, bounded controller history, and configured groups—or records explicit observations in a local SQLite journal for later change queries |
+| Audit intent versus reality | Surfaces missing fields, partial sources, configuration references, ungrouped clients, firmware state, and topology caveats without inventing certainty |
+| Watch the whole fleet | Adds optional read-only Site Manager inventory, console health, firmware/update state, and historical ISP metrics |
+| Execute guarded changes | Turns a proposed mutation into an exact preview, short-lived confirmation capability, live drift check, and one non-retried apply |
+| Run inside your trust boundary | Speaks local stdio or authenticated stateless Streamable HTTP, including a hardened Unix-socket path behind Tailscale Serve |
 
 ## Safety by design
 
