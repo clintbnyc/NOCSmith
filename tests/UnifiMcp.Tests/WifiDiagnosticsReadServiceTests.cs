@@ -317,6 +317,40 @@ public sealed class WifiDiagnosticsReadServiceTests
     }
 
     [Fact]
+    public async Task Read_does_not_expose_duplicate_radio_identifiers_in_errors()
+    {
+        const string privateIdentifier = "password=hunter2";
+        var client = new DiagnosticsClient
+        {
+            Devices = new JsonObject
+            {
+                ["data"] = new JsonArray
+                {
+                    new JsonObject
+                    {
+                        ["mac"] = "11:22:33:44:55:66",
+                        ["radio_table"] = new JsonArray
+                        {
+                            new JsonObject { ["radio"] = privateIdentifier },
+                            new JsonObject { ["radio"] = privateIdentifier }
+                        }
+                    }
+                }
+            }
+        };
+        var service = CreateService(client, enabled: true);
+
+        var exception = await Assert.ThrowsAsync<ContractException>(() =>
+            service.ReadAsync(SiteId, null, null, null, TestContext.Current.CancellationToken));
+
+        Assert.Equal(
+            "Private UniFi device diagnostics returned a duplicate radio identifier.",
+            exception.Message);
+        Assert.DoesNotContain(privateIdentifier, exception.Message, StringComparison.Ordinal);
+        Assert.DoesNotContain("hunter2", exception.Message, StringComparison.Ordinal);
+    }
+
+    [Fact]
     public async Task Read_does_not_merge_anonymous_radio_arrays_by_position()
     {
         var client = new DiagnosticsClient

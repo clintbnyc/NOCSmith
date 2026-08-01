@@ -377,7 +377,7 @@ public sealed partial class WifiDiagnosticsReadService
             if (!index.TryAdd(key, radios[position]))
             {
                 throw new ContractException(
-                    $"Private UniFi device diagnostics returned duplicate radio identifier '{identifier}'.");
+                    "Private UniFi device diagnostics returned a duplicate radio identifier.");
             }
         }
 
