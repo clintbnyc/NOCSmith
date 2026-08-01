@@ -172,9 +172,13 @@ AP radios.
 
 `association.associatedAt` accepts only an explicit controller association
 timestamp; the controller's broader `first_seen` value is not relabelled as a
-current association. Radio configuration and statistics are correlated only
-by a recognized radio identifier. Anonymous records remain separate rather
-than being paired by array position.
+current association. `association.associationDurationSeconds` is derived from
+that validated epoch relative to the response's `_connector.observedAt`; an
+absent, non-epoch, or future association value produces `null`, and a raw epoch
+or duration-like controller value is never passed through as elapsed time.
+Radio configuration and statistics are correlated only by a recognized radio
+identifier. Anonymous records remain separate rather than being paired by
+array position.
 
 Every supported field is present with `null` when the controller or firmware
 does not expose a recognized version-specific alias. Direct SNR takes

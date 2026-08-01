@@ -79,6 +79,7 @@ public sealed class WifiDiagnosticsReadServiceTests
         Assert.Equal("balanced", projectedClient["signal"]!["signalBalance"]!.GetValue<string>());
         Assert.Equal(866.7d, projectedClient["phy"]!["rxRateMbps"]!.GetValue<double>(), precision: 3);
         Assert.Null(projectedClient["association"]!["associatedAt"]);
+        Assert.Null(projectedClient["association"]!["associationDurationSeconds"]);
         Assert.True(projectedClient["network"]!["apipa"]!.GetValue<bool>());
         Assert.Contains("token=<redacted>", projectedClient["network"]!["dhcpFailureReason"]!.GetValue<string>(), StringComparison.Ordinal);
 
@@ -98,6 +99,80 @@ public sealed class WifiDiagnosticsReadServiceTests
         Assert.False(data["_connector"]!["rawPrivateResponsesReturned"]!.GetValue<bool>());
         Assert.Equal("explicit-allowlist", data["_connector"]!["outputProjection"]!.GetValue<string>());
         Assert.Equal(2, client.PrivateReadCount);
+    }
+
+    [Fact]
+    public async Task Association_duration_is_derived_from_epoch_and_never_emits_the_epoch_value()
+    {
+        const long associationEpoch = 1_785_531_834;
+        var observedAt = DateTimeOffset.FromUnixTimeSeconds(associationEpoch).AddSeconds(125);
+        var client = new DiagnosticsClient
+        {
+            Clients = new JsonArray(new JsonObject
+            {
+                ["mac"] = "aa:bb:cc:dd:ee:17",
+                ["is_wired"] = false,
+                ["assoc_time"] = associationEpoch,
+                ["last_seen"] = observedAt.AddSeconds(-2).ToUnixTimeSeconds()
+            })
+        };
+        var service = CreateService(
+            client,
+            enabled: true,
+            timeProvider: new FixedTimeProvider(observedAt));
+
+        var response = await service.ReadAsync(
+            SiteId,
+            null,
+            null,
+            null,
+            TestContext.Current.CancellationToken);
+
+        var association = Assert.Single(response.Data!["clients"]!["data"]!.AsArray())!["association"]!;
+        Assert.Equal(observedAt.AddSeconds(-125).ToString("O"), association["associatedAt"]!.GetValue<string>());
+        Assert.Equal(125, association["associationDurationSeconds"]!.GetValue<long>());
+        Assert.NotEqual(associationEpoch, association["associationDurationSeconds"]!.GetValue<long>());
+        Assert.Contains(
+            "validated controller association epoch",
+            response.Data!["_connector"]!["derivedFields"]!["association.associationDurationSeconds"]!.GetValue<string>(),
+            StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task Association_duration_is_null_without_a_valid_association_epoch()
+    {
+        var observedAt = DateTimeOffset.Parse("2026-08-01T12:00:00Z");
+        var client = new DiagnosticsClient
+        {
+            Clients = new JsonArray(
+                new JsonObject
+                {
+                    ["mac"] = "aa:bb:cc:dd:ee:17",
+                    ["is_wired"] = false,
+                    ["associationDurationSeconds"] = 300
+                },
+                new JsonObject
+                {
+                    ["mac"] = "aa:bb:cc:dd:ee:18",
+                    ["is_wired"] = false,
+                    ["assoc_time"] = observedAt.AddSeconds(1).ToUnixTimeSeconds()
+                })
+        };
+        var service = CreateService(
+            client,
+            enabled: true,
+            timeProvider: new FixedTimeProvider(observedAt));
+
+        var response = await service.ReadAsync(
+            SiteId,
+            null,
+            null,
+            null,
+            TestContext.Current.CancellationToken);
+
+        Assert.All(
+            response.Data!["clients"]!["data"]!.AsArray(),
+            projected => Assert.Null(projected!["association"]!["associationDurationSeconds"]));
     }
 
     [Fact]
@@ -444,7 +519,10 @@ public sealed class WifiDiagnosticsReadServiceTests
         }
         };
 
-    private static WifiDiagnosticsReadService CreateService(DiagnosticsClient client, bool enabled)
+    private static WifiDiagnosticsReadService CreateService(
+        DiagnosticsClient client,
+        bool enabled,
+        TimeProvider? timeProvider = null)
     {
         var configuration = new UnifiConfiguration(
             new Uri("https://unifi.nutria-newton.ts.net/proxy/network/integration/"),
@@ -461,7 +539,20 @@ public sealed class WifiDiagnosticsReadServiceTests
             configuration,
             client,
             siteResolver,
-            new SecretRedactor("test-api-key"));
+            new SecretRedactor("test-api-key"),
+            timeProvider);
+    }
+
+    private sealed class FixedTimeProvider : TimeProvider
+    {
+        private readonly DateTimeOffset _utcNow;
+
+        public FixedTimeProvider(DateTimeOffset utcNow)
+        {
+            _utcNow = utcNow;
+        }
+
+        public override DateTimeOffset GetUtcNow() => _utcNow;
     }
 
     private sealed class DiagnosticsClient : IUnifiClient

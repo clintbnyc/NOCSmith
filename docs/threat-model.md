@@ -326,10 +326,12 @@ failure, explicit source/authority metadata, nullable version-drift behavior,
 and separation of current, historical, and group-membership grains. Wi-Fi
 diagnostics combine only fixed active-client and device resources, discard
 unknown fields, and distinguish configured radio state, operational radio
-state, and explicitly documented derivations. Wired or transport-unknown client
-records are excluded before output limits, nested radio arrays have per-device
-and aggregate source ceilings, and anonymous configuration/statistics records
-are not correlated by array position.
+state, and explicitly documented derivations. Association duration is derived
+only from a validated association epoch relative to the recorded observation
+time; epoch or ambiguous duration-like values are not passed through. Wired or
+transport-unknown client records are excluded before output limits, nested
+radio arrays have per-device and aggregate source ceilings, and anonymous
+configuration/statistics records are not correlated by array position.
 
 Prompt injection through device names, comments, or System Log descriptions
 is not code execution in this repository, but it becomes security-relevant if
