@@ -662,6 +662,7 @@ public sealed partial class ClientJournalService
             ["status"] = ClientJournalValues.Status(source.Status),
             ["recordCount"] = source.Records.Count,
             ["duplicateRecordsSuppressed"] = source.DuplicateRecordsSuppressed,
+            ["maclessTeleportRecordsSuppressed"] = source.MaclessTeleportRecordsSuppressed,
             ["errorCode"] = source.ErrorCode,
             ["errorMessage"] = source.ErrorMessage,
             ["httpStatus"] = source.HttpStatus,

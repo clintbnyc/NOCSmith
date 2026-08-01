@@ -736,7 +736,9 @@
           {
             "properties": {
               "expressions": {
-                "items": {},
+                "items": {
+                  "$ref": "#/components/schemas/FilterExpression"
+                },
                 "type": "array"
               },
               "operator": {
@@ -1482,7 +1484,14 @@
         },
         "x-tags": "Error Handling"
       },
-      "FilterExpression": {},
+      "FilterExpression": {
+        "type": "object",
+        "properties": {
+          "entity": {
+            "$ref": "#/components/schemas/FilterableEntity"
+          }
+        }
+      },
       "FilterPath": {
         "properties": {
           "depth": {
@@ -7377,6 +7386,7 @@
                   "PRINTERS",
                   "ROKU",
                   "SCANNERS",
+                  "SHELLY",
                   "SONOS",
                   "SPOTIFY_CONNECT",
                   "SSH_SERVERS",
@@ -8436,7 +8446,9 @@
           },
           {
             "properties": {
-              "expression": {}
+              "expression": {
+                "$ref": "#/components/schemas/FilterExpression"
+              }
             },
             "type": "object"
           }
@@ -8715,9 +8727,6 @@
               "arguments": {
                 "items": {},
                 "type": "array"
-              },
-              "entity": {
-                "$ref": "#/components/schemas/FilterableEntity"
               },
               "function": {
                 "enum": [
@@ -10191,7 +10200,7 @@
     "description": "",
     "license": {},
     "title": "UniFi Network API",
-    "version": "10.4.57"
+    "version": "10.5.67"
   },
   "openapi": "3.1.0",
   "paths": {
@@ -13755,6 +13764,18 @@
   ],
   "tags": [
     {
+      "description": "Provides an overview of the UniFi Network API, including authentication using API keys and request format. \nStart here to understand how to connect and make your first request.\n\n### Introduction\n\nEach UniFi Application has its own API endpoints running locally on each site,\noffering detailed analytics and control related to that specific application.\nFor a single endpoint with high-level insights across all your UniFi sites,\nrefer to the [UniFi Site Manager API](https://developer.ui.com).\n\n### Authentication and Request Format\n\nAn API Key is a unique identifier used to authenticate API requests.\nTo generate API Keys and view an example of the API Request Format,\nvisit the Integrations section of your UniFi application.",
+      "name": "Getting Started"
+    },
+    {
+      "description": "Explains how to use the filter query parameter for advanced querying across list endpoints,\nincluding supported property types, syntax, and operators.\n\nSome `GET` and `DELETE` endpoints support filtering using the `filter` query parameter.\nEach endpoint supporting filtering will have a detailed list of filterable properties, their types, and allowed functions.\n\n### Filtering Syntax\n\nFiltering follows a structured, URL-safe syntax with three types of expressions.\n\n#### 1. Property Expressions\n\nApply functions to an individual property using the form `<property>.<function>(<arguments>)`,\nwhere argument values are separated by commas.\n\nExamples:\n\n- `id.eq(123)` checks if `id` is equal to `123`;\n- `name.isNotNull()` checks if `name` is not null;\n- `createdAt.in(2025-01-01, 2025-01-05)` checks if `createdAt` is either `2025-01-01` or `2025-01-05`.\n\n#### 2. Compound Expressions\n\nCombine two or more expressions with logical operators using the form `<logical-operator>(<expressions>)`,\nwhere expressions are separated by commas.\n\nExamples:\n\n- `and(name.isNull(), createdAt.gt(2025-01-01))` checks if `name` is null **and** `createdAt` is greater than `2025-01-01`;\n- `or(name.isNull(), expired.isNull(), expiresAt.isNull())` check is **any** of `name`, `expired`, or `expiresAt` is null.\n\n#### 3. Negation Expressions\n\nNegate any other expressions using the the form `not(<expression>)`.\n\nExample:\n\n- `not(name.like('guest*'))` matches all values except those that start with `guest`.\n\n### Filterable Property Types\n\nThe table below lists all supported property types.\n\n|Type|Examples|Syntax|\n|-|-|-|\n|`STRING`|`'Hello, ''World''!'`|Must be wrapped in single quotes. To escape a single quote, use another single quote.|\n|`INTEGER`|`123`|Must start with a digit.|\n|`DECIMAL`|`123`, `123.321`|Must start with a digit. Can include a decimal point (.).|\n|`TIMESTAMP`|`2025-01-29`, `2025-01-29T12:39:11Z`|Must follow ISO 8601 format (date or date-time).|\n|`BOOLEAN`|`true`, `false`|Can be `true` or `false`.|\n|`UUID`|`550e8400-e29b-41d4-a716-446655440000`|Must be a valid UUID format (8-4-4-4-12).|\n|`SET(STRING\\|INTEGER\\|DECIMAL\\|TIMESTAMP\\|UUID)`|`[1, 2, 3, 4, 5]`|A set of (unique) values.|\n\n### Filtering Functions\n\nThe table below lists available filtering functions, their arguments, and applicable property types:\n\n|Function|Arguments|Semantics|Supported property types|\n|-|-|-|-|\n|`isNull`|0|is null|all types|\n|`isNotNull`|0|is not null|all types|\n|`eq`|1|equals|`STRING`, `INTEGER`, `DECIMAL`, `TIMESTAMP`, `BOOLEAN`, `UUID`|\n|`ne`|1|not equals|`STRING`, `INTEGER`, `DECIMAL`, `TIMESTAMP`, `BOOLEAN`, `UUID`|\n|`gt`|1|greater than|`STRING`, `INTEGER`, `DECIMAL`, `TIMESTAMP`, `UUID`|\n|`ge`|1|greater than or equals|`STRING`, `INTEGER`, `DECIMAL`, `TIMESTAMP`, `UUID`|\n|`lt`|1|less than|`STRING`, `INTEGER`, `DECIMAL`, `TIMESTAMP`, `UUID`|\n|`le`|1|less than or equals|`STRING`, `INTEGER`, `DECIMAL`, `TIMESTAMP`, `UUID`|\n|`like`|1|matches pattern|`STRING`|\n|`in`|1 or more|one of|`STRING`, `INTEGER`, `DECIMAL`, `TIMESTAMP`, `UUID`|\n|`notIn`|1 or more|not one of|`STRING`, `INTEGER`, `DECIMAL`, `TIMESTAMP`, `UUID`|\n|`isEmpty`|0|is empty|`SET`|\n|`contains`|1|contains|`SET`|\n|`containsAny`|1 or more|contains any of|`SET`|\n|`containsAll`|1 or more|contains all of|`SET`|\n|`containsExactly`|1 or more|contains exactly|`SET`|\n\n#### Pattern Matching (`like` Function)\n\nThe `like` function allows matching string properties using simple patterns:\n\n- `.` matches any **single** character. Example: `type.like('type.')` matches `type1`, but not `type100`;\n- `*` matches **any number** of characters. Example: `name.like('guest*')` matches `guest1` and `guest100`;\n- `\\` is used to escape `.` and `*`.",
+      "name": "Filtering"
+    },
+    {
+      "description": "Describes the standard API error response structure, including error codes,\nstatus names, and troubleshooting guidance.",
+      "name": "Error Handling"
+    },
+    {
       "description": "Returns general details about the UniFi Network application,\nincluding version and runtime metadata. Useful for integration validation.",
       "name": "Application Info"
     },
@@ -13795,16 +13816,16 @@
       "name": "Switching"
     },
     {
-      "description": "Endpoints for managing DNS Policies within a site.",
-      "name": "DNS Policies"
+      "name": "DNS Policies",
+      "description": "Endpoints for managing DNS Policies within a site."
     },
     {
-      "description": "Endpoints for managing port and IP address lists used across firewall policy configurations.",
-      "name": "Traffic Matching Lists"
+      "name": "Traffic Matching Lists",
+      "description": "Endpoints for managing port and IP address lists used across firewall policy configurations."
     },
     {
-      "description": "Contains read-only reference endpoints used to retrieve supporting data\nsuch as WAN interfaces, DPI categories, country codes, RADIUS profiles, and device tags.",
-      "name": "Supporting Resources"
+      "name": "Supporting Resources",
+      "description": "Contains read-only reference endpoints used to retrieve supporting data\nsuch as WAN interfaces, DPI categories, country codes, RADIUS profiles, and device tags."
     }
   ]
 }

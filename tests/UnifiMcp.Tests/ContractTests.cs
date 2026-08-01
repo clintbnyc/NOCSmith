@@ -10,7 +10,7 @@ public sealed class ContractTests
     {
         var contract = OpenApiContract.LoadEmbedded();
 
-        Assert.Equal("10.4.57", contract.Version);
+        Assert.Equal("10.5.67", contract.Version);
         Assert.Equal(41, contract.ReadCount);
         Assert.Equal(32, contract.WriteCount);
         Assert.Equal(73, contract.Operations.Count);
@@ -32,6 +32,18 @@ public sealed class ContractTests
             "interfaces",
             "ports",
             "stpState"));
+    }
+
+    [Fact]
+    public void Private_read_resources_remain_outside_the_official_contract()
+    {
+        var paths = OpenApiContract.LoadEmbedded().Operations
+            .Select(operation => operation.PathTemplate)
+            .ToHashSet(StringComparer.Ordinal);
+
+        Assert.DoesNotContain(paths, path => path.Contains("clients/history", StringComparison.Ordinal));
+        Assert.DoesNotContain(paths, path => path.Contains("network-members-groups", StringComparison.Ordinal));
+        Assert.DoesNotContain(paths, path => path.Contains("system-log", StringComparison.Ordinal));
     }
 
     [Fact]

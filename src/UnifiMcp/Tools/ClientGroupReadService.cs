@@ -46,7 +46,7 @@ public sealed partial class ClientGroupReadService
         ["readOnly"] = true,
         ["authentication"] = "existing X-API-Key",
         ["fixedResource"] = FixedResource,
-        ["verifiedApplicationVersion"] = "10.4.57",
+        ["verifiedApplicationVersion"] = "10.5.67",
         ["actions"] = new JsonArray("list", "audit"),
         ["auditScope"] = "connected clients returned by the official getConnectedClientOverviewPage operation",
         ["rawPrivateResponsesReturned"] = false

@@ -276,6 +276,7 @@ public sealed partial class ClientObservationCollector
         CancellationToken cancellationToken)
     {
         var records = new List<NormalizedClientObservation>();
+        var maclessTeleportRecordsSuppressed = 0;
         try
         {
             var response = await _client
@@ -291,6 +292,12 @@ public sealed partial class ClientObservationCollector
             var seenMacs = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
             foreach (var source in sourceRecords)
             {
+                if (IsMaclessTeleportRecord(source))
+                {
+                    maclessTeleportRecordsSuppressed++;
+                    continue;
+                }
+
                 var mac = ReadMac(source, "mac", "private client-history");
                 if (!seenMacs.Add(mac))
                 {
@@ -321,7 +328,10 @@ public sealed partial class ClientObservationCollector
                     }));
             }
 
-            return Complete(ClientObservationSource.UiHistory, records);
+            return Complete(
+                ClientObservationSource.UiHistory,
+                records,
+                maclessTeleportRecordsSuppressed: maclessTeleportRecordsSuppressed);
         }
         catch (OperationCanceledException)
         {
@@ -334,9 +344,16 @@ public sealed partial class ClientObservationCollector
                 records,
                 SourceErrorCode(exception),
                 "The bounded UI-history source was unavailable or failed validation.",
-                exception);
+                exception,
+                maclessTeleportRecordsSuppressed: maclessTeleportRecordsSuppressed);
         }
     }
+
+    private static bool IsMaclessTeleportRecord(JsonObject source) =>
+        source["mac"] is null &&
+        source["type"] is JsonValue type &&
+        type.TryGetValue<string>(out var value) &&
+        string.Equals(value, "TELEPORT", StringComparison.Ordinal);
 
     private async Task<SourceCollection<NormalizedClientGroup>> CollectGroupsAsync(
         string internalSiteReference,
@@ -435,14 +452,16 @@ public sealed partial class ClientObservationCollector
     private static SourceCollection<T> Complete<T>(
         ClientObservationSource source,
         IReadOnlyList<T> records,
-        int duplicateRecordsSuppressed = 0) =>
+        int duplicateRecordsSuppressed = 0,
+        int maclessTeleportRecordsSuppressed = 0) =>
         new(
             source,
             CollectionSourceStatus.Complete,
             records,
             null,
             null,
-            DuplicateRecordsSuppressed: duplicateRecordsSuppressed);
+            DuplicateRecordsSuppressed: duplicateRecordsSuppressed,
+            MaclessTeleportRecordsSuppressed: maclessTeleportRecordsSuppressed);
 
     private static SourceCollection<T> NotAttempted<T>(
         ClientObservationSource source) =>
@@ -459,7 +478,8 @@ public sealed partial class ClientObservationCollector
         string errorCode,
         string errorMessage,
         Exception exception,
-        int duplicateRecordsSuppressed = 0) =>
+        int duplicateRecordsSuppressed = 0,
+        int maclessTeleportRecordsSuppressed = 0) =>
         new(
             source,
             records.Count == 0 ? CollectionSourceStatus.Failed : CollectionSourceStatus.Partial,
@@ -468,7 +488,8 @@ public sealed partial class ClientObservationCollector
             errorMessage,
             exception is UnifiApiException api ? (int)api.StatusCode : null,
             exception is UnifiApiException apiWithCode ? apiWithCode.Code : null,
-            duplicateRecordsSuppressed);
+            duplicateRecordsSuppressed,
+            maclessTeleportRecordsSuppressed);
 
     private static long ValidatePage(JsonObject response, JsonArray page, int requestedOffset)
     {

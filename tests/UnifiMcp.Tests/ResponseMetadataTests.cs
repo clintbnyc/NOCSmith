@@ -44,7 +44,7 @@ public sealed class ResponseMetadataTests
         Assert.Equal(
             "normalized UniFi UI role (Edge versus Participant)",
             Assert.Single(uiRole["stillMissing"]!.AsArray())!.GetValue<string>());
-        Assert.Contains("10.4.57", labels["reason"]!.GetValue<string>(), StringComparison.Ordinal);
+        Assert.Contains("10.5.67", labels["reason"]!.GetValue<string>(), StringComparison.Ordinal);
     }
 
     [Fact]

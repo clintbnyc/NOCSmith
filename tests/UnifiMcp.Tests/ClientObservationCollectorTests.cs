@@ -71,6 +71,56 @@ public sealed class ClientObservationCollectorTests
     }
 
     [Fact]
+    public async Task Macless_teleport_history_record_is_counted_and_suppressed()
+    {
+        var client = new ObservationClient
+        {
+            History = new JsonArray(
+                new JsonObject
+                {
+                    ["type"] = "TELEPORT",
+                    ["last_seen"] = Now.AddMinutes(-5).ToUnixTimeSeconds()
+                },
+                new JsonObject
+                {
+                    ["mac"] = "aa:bb:cc:dd:ee:01",
+                    ["last_seen"] = Now.AddMinutes(-5).ToUnixTimeSeconds()
+                })
+        };
+
+        var result = await CreateCollector(client).CollectAsync(
+            null,
+            24,
+            TestContext.Current.CancellationToken);
+
+        Assert.Equal(CollectionSourceStatus.Complete, result.History.Status);
+        Assert.Single(result.History.Records);
+        Assert.Equal(1, result.History.MaclessTeleportRecordsSuppressed);
+    }
+
+    [Fact]
+    public async Task Missing_mac_on_non_teleport_history_record_still_fails_closed()
+    {
+        var client = new ObservationClient
+        {
+            History = new JsonArray(new JsonObject
+            {
+                ["type"] = "CLIENT",
+                ["last_seen"] = Now.AddMinutes(-5).ToUnixTimeSeconds()
+            })
+        };
+
+        var result = await CreateCollector(client).CollectAsync(
+            null,
+            24,
+            TestContext.Current.CancellationToken);
+
+        Assert.Equal(CollectionSourceStatus.Failed, result.History.Status);
+        Assert.Equal("unrecognizedResponseContract", result.History.ErrorCode);
+        Assert.Equal(0, result.History.MaclessTeleportRecordsSuppressed);
+    }
+
+    [Fact]
     public async Task Later_official_page_failure_preserves_validated_partial_positive_evidence()
     {
         var connected = new JsonArray();

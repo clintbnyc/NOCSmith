@@ -27,17 +27,20 @@ public sealed partial class WifiDiagnosticsReadService
     private readonly IUnifiClient _client;
     private readonly SiteResolver _siteResolver;
     private readonly SecretRedactor _redactor;
+    private readonly TimeProvider _timeProvider;
 
     public WifiDiagnosticsReadService(
         UnifiConfiguration configuration,
         IUnifiClient client,
         SiteResolver siteResolver,
-        SecretRedactor redactor)
+        SecretRedactor redactor,
+        TimeProvider? timeProvider = null)
     {
         _configuration = configuration;
         _client = client;
         _siteResolver = siteResolver;
         _redactor = redactor;
+        _timeProvider = timeProvider ?? TimeProvider.System;
     }
 
     public bool Enabled => _configuration.EnableLegacyReadEnrichment;
@@ -87,6 +90,7 @@ public sealed partial class WifiDiagnosticsReadService
 
         var sourceClients = PrivateReadResponseParser.ReadRecords(await clientsTask.ConfigureAwait(false));
         var sourceDevices = PrivateReadResponseParser.ReadRecords(await devicesTask.ConfigureAwait(false));
+        var observedAt = _timeProvider.GetUtcNow();
         if (sourceClients.Count > MaximumSourceClients)
         {
             throw new ContractException($"Private UniFi client diagnostics exceeded the {MaximumSourceClients} record safety limit.");
@@ -104,7 +108,7 @@ public sealed partial class WifiDiagnosticsReadService
             .ToDictionary(group => group.Key, group => group.First().Name, StringComparer.OrdinalIgnoreCase);
         var projectedClients = sourceClients
             .Where(client => ReadWireless(client) is true)
-            .Select(client => ProjectClient(client, accessPointNames))
+            .Select(client => ProjectClient(client, accessPointNames, observedAt))
             .Where(client => client is not null)
             .Cast<JsonObject>()
             .Where(client => normalizedClientMac is null ||
@@ -152,7 +156,7 @@ public sealed partial class WifiDiagnosticsReadService
                 ["truncated"] = projectedRadios.Length > radios.Count,
                 ["data"] = radios
             },
-            ["_connector"] = CreateMetadata()
+            ["_connector"] = CreateMetadata(observedAt)
         };
 
         return new ToolResponse(
@@ -162,7 +166,8 @@ public sealed partial class WifiDiagnosticsReadService
 
     private JsonObject? ProjectClient(
         JsonObject source,
-        IReadOnlyDictionary<string, string?> accessPointNames)
+        IReadOnlyDictionary<string, string?> accessPointNames,
+        DateTimeOffset observedAt)
     {
         var macAddress = ReadMac(source, "mac", "macAddress");
         if (macAddress is null)
@@ -175,7 +180,12 @@ public sealed partial class WifiDiagnosticsReadService
         var rssi = ReadDouble(source, "signal", "rssi", "rssiDbm");
         var snr = ReadDouble(source, "snr", "snrDb") ??
             (rssi is not null && noiseFloor is not null ? rssi.Value - noiseFloor.Value : null);
-        var associatedAt = ReadEpochTimestamp(source, "associated_at", "association_time", "associatedAt");
+        var associatedAt = ReadEpochInstant(
+            source,
+            "associated_at",
+            "association_time",
+            "associatedAt",
+            "assoc_time");
         var lastSeenAt = ReadEpochTimestamp(source, "last_seen", "lastSeen", "lastSeenAt");
         var roamAt = ReadEpochTimestamp(source, "last_roam", "roam_time", "roamAt");
         var accessPointMacAddress = ReadMac(source, "ap_mac", "apMac", "uplink_mac", "uplinkMac");
@@ -194,8 +204,10 @@ public sealed partial class WifiDiagnosticsReadService
                 ["band"] = ReadBand(source),
                 ["channel"] = ReadInteger(source, "channel", "radio_channel", "radioChannel"),
                 ["channelWidthMhz"] = ReadChannelWidth(source),
-                ["associatedAt"] = associatedAt,
-                ["associationDurationSeconds"] = ReadLong(source, "assoc_time", "associationDurationSeconds"),
+                ["associatedAt"] = FormatTimestamp(associatedAt),
+                ["associationDurationSeconds"] = AssociationDurationSeconds(
+                    associatedAt,
+                    observedAt),
                 ["lastSeenAt"] = lastSeenAt,
                 ["lastRoamAt"] = roamAt,
                 ["roamCount"] = ReadLong(source, "roam_count", "roamCount"),
@@ -290,7 +302,7 @@ public sealed partial class WifiDiagnosticsReadService
         }
     }
 
-    private JsonObject CreateMetadata() => new()
+    private JsonObject CreateMetadata(DateTimeOffset observedAt) => new()
     {
         ["readOnly"] = true,
         ["sourceLimits"] = new JsonObject
@@ -306,7 +318,7 @@ public sealed partial class WifiDiagnosticsReadService
         ["rawPrivateResponsesReturned"] = false,
         ["outputProjection"] = "explicit-allowlist",
         ["redactionApplied"] = true,
-        ["observedAt"] = DateTimeOffset.UtcNow.ToString("O", CultureInfo.InvariantCulture),
+        ["observedAt"] = observedAt.ToString("O", CultureInfo.InvariantCulture),
         ["versionDriftBehavior"] = "Known snake_case and camelCase aliases are projected; unavailable fields are null.",
         ["fieldProvenance"] = new JsonObject
         {
@@ -316,6 +328,8 @@ public sealed partial class WifiDiagnosticsReadService
         },
         ["derivedFields"] = new JsonObject
         {
+            ["association.associationDurationSeconds"] =
+                "Derived from a validated controller association epoch relative to observedAt; direct duration-like values are not passed through.",
             ["signal.snrDb"] = "Derived from RSSI minus noise floor only when both are available; direct controller SNR takes precedence.",
             ["network.apipa"] = "Derived from a validated 169.254.0.0/16 IPv4 address only when no direct controller APIPA field is available."
         },
@@ -599,7 +613,10 @@ public sealed partial class WifiDiagnosticsReadService
         return direct ?? ReadDouble(source, kilobitNames) / 1000d;
     }
 
-    private static string? ReadEpochTimestamp(JsonObject source, params string[] names)
+    private static string? ReadEpochTimestamp(JsonObject source, params string[] names) =>
+        FormatTimestamp(ReadEpochInstant(source, names));
+
+    private static DateTimeOffset? ReadEpochInstant(JsonObject source, params string[] names)
     {
         var epoch = ReadLong(source, names);
         if (epoch is null)
@@ -612,14 +629,27 @@ public sealed partial class WifiDiagnosticsReadService
             var instant = epoch.Value > 10_000_000_000
                 ? DateTimeOffset.FromUnixTimeMilliseconds(epoch.Value)
                 : DateTimeOffset.FromUnixTimeSeconds(epoch.Value);
-            return instant.Year >= 2000
-                ? instant.ToString("O", CultureInfo.InvariantCulture)
-                : null;
+            return instant.Year >= 2000 ? instant : null;
         }
         catch (ArgumentOutOfRangeException)
         {
             return null;
         }
+    }
+
+    private static string? FormatTimestamp(DateTimeOffset? instant) =>
+        instant?.ToString("O", CultureInfo.InvariantCulture);
+
+    private static long? AssociationDurationSeconds(
+        DateTimeOffset? associatedAt,
+        DateTimeOffset observedAt)
+    {
+        if (associatedAt is null || associatedAt > observedAt)
+        {
+            return null;
+        }
+
+        return checked((long)Math.Floor((observedAt - associatedAt.Value).TotalSeconds));
     }
 
     private static string? ReadIpAddress(JsonObject source, params string[] names)

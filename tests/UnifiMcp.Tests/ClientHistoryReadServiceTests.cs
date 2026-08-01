@@ -250,6 +250,33 @@ public sealed class ClientHistoryReadServiceTests
     }
 
     [Fact]
+    public async Task Macless_teleport_history_record_is_suppressed_and_reported()
+    {
+        var recent = DateTimeOffset.UtcNow.AddMinutes(-5).ToUnixTimeSeconds();
+        var client = new HistoryClient
+        {
+            History = new JsonArray(
+                new JsonObject
+                {
+                    ["type"] = "TELEPORT",
+                    ["last_seen"] = recent
+                },
+                History("aa:bb:cc:dd:ee:01", "Offline", null, recent))
+        };
+        var service = CreateService(client);
+
+        var response = await service.ReadAsync(null, 24, 0, 100, CancellationToken.None);
+
+        var data = Assert.IsType<JsonObject>(response.Data);
+        Assert.Equal("ok", data["_connector"]!["status"]!.GetValue<string>());
+        Assert.Single(data["offlineClientsWithinWindow"]!.AsArray());
+        Assert.Equal(1, data["counts"]!["maclessTeleportRecordsSuppressed"]!.GetValue<int>());
+        Assert.Equal(
+            1,
+            data["_connector"]!["maclessTeleportRecordsSuppressed"]!.GetValue<int>());
+    }
+
+    [Fact]
     public async Task Official_hostname_is_retained_when_name_is_unavailable()
     {
         var client = new HistoryClient

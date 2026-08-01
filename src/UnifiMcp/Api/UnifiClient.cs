@@ -12,6 +12,8 @@ namespace UnifiMcp.Api;
 
 public sealed class UnifiClient : IUnifiClient, IDisposable
 {
+    private const int MaximumContractResponseBytes = 2 * 1024 * 1024;
+
     private static readonly HashSet<HttpStatusCode> RetryableStatuses = new()
     {
         HttpStatusCode.TooManyRequests,
@@ -70,7 +72,12 @@ public sealed class UnifiClient : IUnifiClient, IDisposable
             throw new ArgumentException("Fixed API path must be relative.", nameof(relativePath));
         }
 
-        return SendWithReadRetriesAsync(HttpMethod.Get, relativePath, null, cancellationToken);
+        return SendWithReadRetriesAsync(
+            HttpMethod.Get,
+            relativePath,
+            null,
+            cancellationToken,
+            MaximumContractResponseBytes);
     }
 
     public Task<JsonNode?> ReadLegacyDevicesAsync(string internalSiteReference, CancellationToken cancellationToken) =>
@@ -117,7 +124,8 @@ public sealed class UnifiClient : IUnifiClient, IDisposable
         HttpMethod method,
         string relativeUri,
         JsonNode? body,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        int? maximumResponseBytes = null)
     {
         const int maximumAttempts = 3;
         Exception? lastException = null;
@@ -126,7 +134,13 @@ public sealed class UnifiClient : IUnifiClient, IDisposable
         {
             try
             {
-                return await SendOnceAsync(method, relativeUri, body, cancellationToken, allowRetryStatus: attempt < maximumAttempts)
+                return await SendOnceAsync(
+                        method,
+                        relativeUri,
+                        body,
+                        cancellationToken,
+                        allowRetryStatus: attempt < maximumAttempts,
+                        maximumResponseBytes)
                     .ConfigureAwait(false);
             }
             catch (RetryableUnifiException exception) when (attempt < maximumAttempts)
@@ -157,7 +171,8 @@ public sealed class UnifiClient : IUnifiClient, IDisposable
         string relativeUri,
         JsonNode? body,
         CancellationToken cancellationToken,
-        bool allowRetryStatus = false)
+        bool allowRetryStatus = false,
+        int? maximumResponseBytes = null)
     {
         if (IsExternalUri(relativeUri))
         {
@@ -188,6 +203,28 @@ public sealed class UnifiClient : IUnifiClient, IDisposable
 
         using (response)
         {
+            if (response.Content is not null && maximumResponseBytes is not null)
+            {
+                if (response.Content.Headers.ContentLength > maximumResponseBytes)
+                {
+                    throw new ContractException(
+                        $"UniFi fixed response exceeded the {maximumResponseBytes}-byte safety limit.");
+                }
+
+                try
+                {
+                    await response.Content
+                        .LoadIntoBufferAsync(maximumResponseBytes.Value, cancellationToken)
+                        .ConfigureAwait(false);
+                }
+                catch (HttpRequestException exception)
+                {
+                    throw new ContractException(
+                        $"UniFi fixed response exceeded the {maximumResponseBytes}-byte safety limit.",
+                        exception);
+                }
+            }
+
             var content = response.Content is null
                 ? string.Empty
                 : await response.Content.ReadAsStringAsync(cancellationToken).ConfigureAwait(false);

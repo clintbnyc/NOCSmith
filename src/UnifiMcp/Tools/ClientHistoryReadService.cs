@@ -69,7 +69,7 @@ public sealed partial class ClientHistoryReadService
         ["readOnly"] = true,
         ["authentication"] = "existing X-API-Key",
         ["fixedResource"] = FixedHistoryResource,
-        ["verifiedApplicationVersion"] = "10.4.57",
+        ["verifiedApplicationVersion"] = "10.5.67",
         ["supportedHistoryHours"] = new JsonArray(
             SupportedHistoryHours.Select(value => (JsonNode?)JsonValue.Create(value)).ToArray()),
         ["defaultHistoryHours"] = DefaultHistoryHours,
@@ -219,7 +219,8 @@ public sealed partial class ClientHistoryReadService
                 observedAt,
                 connected,
                 history,
-                groups);
+                groups,
+                collection.History.MaclessTeleportRecordsSuppressed);
         }
         catch (ContractException)
         {
@@ -296,7 +297,8 @@ public sealed partial class ClientHistoryReadService
         DateTimeOffset observedAt,
         ConnectedReadResult connectedResult,
         IReadOnlyList<HistoryClient> history,
-        IReadOnlyList<ClientGroup> groups)
+        IReadOnlyList<ClientGroup> groups,
+        int maclessTeleportRecordsSuppressed)
     {
         var groupsByMac = groups
             .SelectMany(group => group.Members.Select(member => (member, group)))
@@ -403,7 +405,8 @@ public sealed partial class ClientHistoryReadService
                 ["offlineWithinWindow"] = offline.Length,
                 ["groupMembersWithoutHistory"] = groupMembersWithoutHistory.Length,
                 ["historySourceRecords"] = history.Count,
-                ["historyRecordsAlsoCurrentlyConnected"] = historyRecordsAlsoConnected
+                ["historyRecordsAlsoCurrentlyConnected"] = historyRecordsAlsoConnected,
+                ["maclessTeleportRecordsSuppressed"] = maclessTeleportRecordsSuppressed
             },
             ["currentlyConnectedClients"] = connectedData,
             ["offlineClientsWithinWindow"] = offlineData,
@@ -450,12 +453,14 @@ public sealed partial class ClientHistoryReadService
                 ["offlineCount"] = offline.Length,
                 ["connectedDuplicateMacsSuppressed"] = connectedResult.DuplicateMacCount,
                 ["historyRecordsSuppressedBecauseCurrentlyConnected"] = historyRecordsAlsoConnected,
+                ["maclessTeleportRecordsSuppressed"] = maclessTeleportRecordsSuppressed,
                 ["unavailableFields"] = unavailableFields,
                 ["auditScope"] =
                     "Currently connected clients from the official overview at observation time; non-blocked private client-history records within the effective bounded window; and configured CLIENTS group memberships joined only by normalized MAC address.",
                 ["knownLimitations"] = new JsonArray(
                     "Blocked clients are excluded by the fixed onlyNonBlocked=true UI query.",
                     "All-time history is intentionally unavailable; the action accepts only bounded Network UI windows.",
+                    "MAC-less TELEPORT pseudo-client records are counted and suppressed because the connector cannot safely join them to MAC-keyed client history.",
                     "Configured group membership does not prove current connection, VLAN, topology, firewall policy, ownership, or a history observation.",
                     "History records never overwrite or extend authoritative fields from the current connected-client overview."),
                 ["observedAt"] = observedAt.ToString("O", CultureInfo.InvariantCulture)

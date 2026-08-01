@@ -44,7 +44,8 @@ public sealed record SourceCollection<T>(
     string? ErrorMessage,
     int? HttpStatus = null,
     string? ControllerReasonCode = null,
-    int DuplicateRecordsSuppressed = 0)
+    int DuplicateRecordsSuppressed = 0,
+    int MaclessTeleportRecordsSuppressed = 0)
 {
     public bool HasUsableEvidence => Records.Count > 0 || Status == CollectionSourceStatus.Complete;
 }
