@@ -1,8 +1,10 @@
 <div align="center">
 
-# CLINT
+# NOCsmith
 
-**Controlled LAN Intelligence & Network Toolkit**
+**Network intelligence, forged safely.**
+
+*by Clint*
 
 A security-first Model Context Protocol server for operating and understanding
 UniFi Network.
@@ -20,7 +22,7 @@ open-ended API proxy.
 
 ## What it is
 
-CLINT connects MCP-compatible assistants to a self-hosted UniFi Network
+NOCsmith connects MCP-compatible assistants to a self-hosted UniFi Network
 controller. It exposes 36 purpose-built tools for reading network state,
 investigating client behavior, reviewing configuration, and applying approved
 changes.
@@ -36,7 +38,7 @@ not affiliated with or endorsed by Ubiquiti.
 
 ## Network superpowers
 
-| Mission | What CLINT does |
+| Mission | What NOCsmith does |
 | --- | --- |
 | Map the control plane | Builds source-aware snapshots across sites, devices, clients, networks, Wi-Fi, switching, firewall, ACL, DNS, VPN, WAN, vouchers, and traffic policy |
 | Hunt RF ghosts | Correlates a client with its AP and radio, then exposes RSSI, SNR, noise, PHY rates, MCS/NSS, retries, channel utilization, transmit power, roaming, and DHCP/APIPA evidence |
@@ -71,7 +73,7 @@ Read the concise [security policy](SECURITY.md) or the full
 
 ```mermaid
 flowchart LR
-    client["MCP client"] -->|stdio or authenticated HTTP| server["CLINT"]
+    client["MCP client"] -->|stdio or authenticated HTTP| server["NOCsmith"]
     server --> guard["Contract validation, projection, redaction"]
     guard --> local["UniFi Network Integration API"]
     guard -.-> private["Fixed opt-in UniFi resources"]
@@ -165,7 +167,7 @@ limits, retention, provenance, and recovery behavior.
 
 ## Compatibility
 
-CLINT currently retains `unifi-mcp` as its executable, MCP server ID,
+NOCsmith currently retains `unifi-mcp` as its executable, MCP server ID,
 container/image name, repository slug, and deployment namespace. Existing
 configuration and automation therefore continue to work without migration.
 

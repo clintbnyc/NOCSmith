@@ -82,6 +82,6 @@ ln -s "releases/$release_name" "$next_link"
 mv -h -f "$next_link" "$current_link"
 
 trap - EXIT HUP INT TERM
-printf 'Published CLINT to %s\n' "$release_path"
+printf 'Published NOCsmith to %s\n' "$release_path"
 printf 'Current release: %s\n' "$current_link"
 printf 'Codex executable: %s/unifi-mcp\n' "$current_link"

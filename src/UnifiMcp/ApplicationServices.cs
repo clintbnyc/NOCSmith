@@ -61,7 +61,7 @@ public static class ApplicationServices
         options.ServerInfo = new Implementation
         {
             Name = "unifi-mcp",
-            Title = "CLINT — Controlled LAN Intelligence & Network Toolkit",
+            Title = "NOCsmith by Clint",
             Version = "1.2.0",
             Description = "Security-first UniFi Network intelligence for inventory, diagnostics, history, and confirmation-bound changes."
         };

@@ -1,4 +1,4 @@
-# CLINT Operations Reference
+# NOCsmith Operations Reference
 
 This is the detailed configuration and deployment reference for the tracked
 local and Pinode environments. Start with the product-facing

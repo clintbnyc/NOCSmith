@@ -120,7 +120,7 @@ public static class DoctorCommand
             var key = Environment.GetEnvironmentVariable("UNIFI_API_KEY");
             var siteKey = Environment.GetEnvironmentVariable("UNIFI_SITE_API_KEY");
             Console.Error.WriteLine(
-                "CLINT doctor failed: " +
+                "NOCsmith doctor failed: " +
                 new SecretRedactor(key, siteKey).Redact(exception.Message));
             return 1;
         }
