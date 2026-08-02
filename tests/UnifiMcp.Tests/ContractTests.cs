@@ -96,6 +96,27 @@ public sealed class ContractTests
     }
 
     [Fact]
+    public void Discriminator_normalization_rejects_aliases_without_declared_wire_enum()
+    {
+        var contract = OpenApiContract.LoadEmbedded();
+        var operation = contract.GetOperation("executeAdoptedDeviceAction", requireRead: false);
+        var path = new Dictionary<string, string>
+        {
+            ["siteId"] = "00000000-0000-0000-0000-000000000001",
+            ["deviceId"] = "00000000-0000-0000-0000-000000000002"
+        };
+
+        var exception = Assert.Throws<ContractException>(() =>
+            contract.ValidateAndBuild(
+                operation,
+                path,
+                null,
+                new JsonObject { ["action"] = "restart" }));
+
+        Assert.Contains("does not select a supported discriminator variant", exception.Message, StringComparison.Ordinal);
+    }
+
+    [Fact]
     public void Numeric_schema_bounds_are_enforced()
     {
         var contract = OpenApiContract.LoadEmbedded();

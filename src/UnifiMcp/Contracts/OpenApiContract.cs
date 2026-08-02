@@ -472,7 +472,7 @@ public sealed partial class OpenApiContract
         }
     }
 
-    private static JsonObject? ResolveDiscriminatorSchema(JsonObject schema, JsonObject source, string path)
+    private JsonObject? ResolveDiscriminatorSchema(JsonObject schema, JsonObject source, string path)
     {
         if (schema["discriminator"] is not JsonObject discriminator)
         {
@@ -494,9 +494,13 @@ public sealed partial class OpenApiContract
             throw new ContractException("OpenAPI discriminator is missing mapping.");
         }
 
-        var mappingKey = mapping.ContainsKey(selectedValue)
-            ? selectedValue
-            : EncodeDiscriminatorValue(selectedValue);
+        var mappingKey = selectedValue;
+        if (!mapping.ContainsKey(mappingKey) &&
+            IsDeclaredDiscriminatorWireValue(schema, propertyName, selectedValue))
+        {
+            mappingKey = EncodeDiscriminatorValue(selectedValue);
+        }
+
         if (mapping[mappingKey] is not JsonValue mappingValue ||
             !mappingValue.TryGetValue<string>(out var mappedReference) ||
             string.IsNullOrWhiteSpace(mappedReference))
@@ -506,6 +510,20 @@ public sealed partial class OpenApiContract
         }
 
         return new JsonObject { ["$ref"] = mappedReference };
+    }
+
+    private bool IsDeclaredDiscriminatorWireValue(JsonObject schema, string propertyName, string selectedValue)
+    {
+        if (schema["properties"]?[propertyName] is not JsonObject propertySchema)
+        {
+            return false;
+        }
+
+        var resolvedProperty = Resolve(propertySchema);
+        return resolvedProperty["enum"] is JsonArray wireValues &&
+            wireValues.Any(candidate => candidate is JsonValue value &&
+                value.TryGetValue<string>(out var wireValue) &&
+                string.Equals(wireValue, selectedValue, StringComparison.Ordinal));
     }
 
     private static string EncodeDiscriminatorValue(string value) =>
