@@ -96,6 +96,27 @@ public sealed class ContractTests
     }
 
     [Fact]
+    public void Discriminator_normalization_rejects_aliases_without_declared_wire_enum()
+    {
+        var contract = OpenApiContract.LoadEmbedded();
+        var operation = contract.GetOperation("executeAdoptedDeviceAction", requireRead: false);
+        var path = new Dictionary<string, string>
+        {
+            ["siteId"] = "00000000-0000-0000-0000-000000000001",
+            ["deviceId"] = "00000000-0000-0000-0000-000000000002"
+        };
+
+        var exception = Assert.Throws<ContractException>(() =>
+            contract.ValidateAndBuild(
+                operation,
+                path,
+                null,
+                new JsonObject { ["action"] = "restart" }));
+
+        Assert.Contains("does not select a supported discriminator variant", exception.Message, StringComparison.Ordinal);
+    }
+
+    [Fact]
     public void Numeric_schema_bounds_are_enforced()
     {
         var contract = OpenApiContract.LoadEmbedded();
@@ -122,5 +143,73 @@ public sealed class ContractTests
             null,
             new JsonObject { ["name"] = "test", ["timeLimitMinutes"] = 1, ["count"] = 1000 });
         Assert.NotNull(request.Body);
+    }
+
+    [Fact]
+    public void Gateway_network_validation_follows_discriminator_required_fields()
+    {
+        var contract = OpenApiContract.LoadEmbedded();
+        var operation = contract.GetOperation("updateNetwork", requireRead: false);
+        var path = new Dictionary<string, string>
+        {
+            ["siteId"] = "00000000-0000-0000-0000-000000000001",
+            ["networkId"] = "00000000-0000-0000-0000-000000000002"
+        };
+        var incompleteGatewayBody = new JsonObject
+        {
+            ["enabled"] = true,
+            ["management"] = "GATEWAY",
+            ["name"] = "Office",
+            ["vlanId"] = 20
+        };
+
+        var exception = Assert.Throws<ContractException>(() =>
+            contract.ValidateAndBuild(operation, path, null, incompleteGatewayBody));
+
+        Assert.Contains("cellularBackupEnabled", exception.Message, StringComparison.Ordinal);
+        Assert.Contains("required", exception.Message, StringComparison.Ordinal);
+    }
+
+    [Theory]
+    [InlineData("tcp")]
+    [InlineData("ax.25")]
+    [InlineData("idpr-cmtp")]
+    public void Firewall_policy_validation_accepts_named_protocol_wire_values(string protocolName)
+    {
+        var contract = OpenApiContract.LoadEmbedded();
+        var operation = contract.GetOperation("createFirewallPolicy", requireRead: false);
+        var path = new Dictionary<string, string>
+        {
+            ["siteId"] = "00000000-0000-0000-0000-000000000001"
+        };
+        var body = new JsonObject
+        {
+            ["action"] = new JsonObject { ["type"] = "BLOCK" },
+            ["destination"] = new JsonObject
+            {
+                ["zoneId"] = "00000000-0000-0000-0000-000000000002"
+            },
+            ["enabled"] = true,
+            ["ipProtocolScope"] = new JsonObject
+            {
+                ["ipVersion"] = "IPV4",
+                ["protocolFilter"] = new JsonObject
+                {
+                    ["type"] = "NAMED_PROTOCOL",
+                    ["matchOpposite"] = false,
+                    ["protocol"] = new JsonObject { ["name"] = protocolName }
+                }
+            },
+            ["loggingEnabled"] = false,
+            ["name"] = "Allow DNS",
+            ["source"] = new JsonObject
+            {
+                ["zoneId"] = "00000000-0000-0000-0000-000000000003"
+            }
+        };
+
+        var request = contract.ValidateAndBuild(operation, path, null, body);
+
+        Assert.True(JsonNode.DeepEquals(body, request.Body));
     }
 }

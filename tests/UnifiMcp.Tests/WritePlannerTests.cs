@@ -98,6 +98,116 @@ public sealed class WritePlannerTests
     }
 
     [Fact]
+    public async Task Gateway_network_update_preserves_ipv6_and_required_gateway_fields()
+    {
+        var fixture = CreateFixture();
+        fixture.Client.State = GatewayNetwork();
+
+        var preview = await fixture.Planner.PreviewAsync(
+            "updateNetwork",
+            new Dictionary<string, string> { ["siteId"] = SiteId, ["networkId"] = DeviceId },
+            null,
+            new JsonObject { ["internetAccessEnabled"] = false },
+            mergeChanges: true,
+            allowReferenced: false,
+            CancellationToken.None);
+
+        var proposed = preview.ProposedBody!.AsObject();
+        Assert.False(proposed["internetAccessEnabled"]!.GetValue<bool>());
+        Assert.True(proposed["cellularBackupEnabled"]!.GetValue<bool>());
+        Assert.NotNull(proposed["ipv4Configuration"]);
+        Assert.True(JsonNode.DeepEquals(
+            GatewayNetwork()["ipv6Configuration"],
+            proposed["ipv6Configuration"]));
+        Assert.False(proposed.ContainsKey("id"));
+        Assert.False(proposed.ContainsKey("default"));
+        Assert.False(proposed.ContainsKey("metadata"));
+
+        await fixture.Planner.ApplyAsync(preview.ConfirmationToken, CancellationToken.None);
+
+        Assert.Equal(1, fixture.Client.MutationCount);
+        Assert.True(JsonNode.DeepEquals(proposed, fixture.Client.LastMutation!.Body));
+    }
+
+    [Fact]
+    public async Task Gateway_network_update_rejects_unknown_live_discriminator()
+    {
+        var fixture = CreateFixture();
+        fixture.Client.State = GatewayNetwork();
+        fixture.Client.State["management"] = "FUTURE_GATEWAY";
+
+        var exception = await Assert.ThrowsAsync<ContractException>(() => fixture.Planner.PreviewAsync(
+            "updateNetwork",
+            new Dictionary<string, string> { ["siteId"] = SiteId, ["networkId"] = DeviceId },
+            null,
+            new JsonObject { ["internetAccessEnabled"] = false },
+            mergeChanges: true,
+            allowReferenced: false,
+            CancellationToken.None));
+
+        Assert.Contains("does not select a supported discriminator variant", exception.Message, StringComparison.Ordinal);
+        Assert.Equal(0, fixture.Client.MutationCount);
+    }
+
+    [Fact]
+    public async Task Gateway_network_update_retains_explicit_ipv6_clear()
+    {
+        var fixture = CreateFixture();
+        fixture.Client.State = GatewayNetwork();
+
+        var preview = await fixture.Planner.PreviewAsync(
+            "updateNetwork",
+            new Dictionary<string, string> { ["siteId"] = SiteId, ["networkId"] = DeviceId },
+            null,
+            new JsonObject { ["ipv6Configuration"] = null },
+            mergeChanges: true,
+            allowReferenced: false,
+            CancellationToken.None);
+
+        var proposed = preview.ProposedBody!.AsObject();
+        Assert.True(proposed.ContainsKey("ipv6Configuration"));
+        Assert.Null(proposed["ipv6Configuration"]);
+
+        await fixture.Planner.ApplyAsync(preview.ConfirmationToken, CancellationToken.None);
+
+        Assert.Null(fixture.Client.LastMutation!.Body!["ipv6Configuration"]);
+    }
+
+    [Fact]
+    public async Task Gateway_network_update_discards_previous_ipv6_variant_fields()
+    {
+        var fixture = CreateFixture();
+        fixture.Client.State = GatewayNetwork();
+
+        var preview = await fixture.Planner.PreviewAsync(
+            "updateNetwork",
+            new Dictionary<string, string> { ["siteId"] = SiteId, ["networkId"] = DeviceId },
+            null,
+            new JsonObject
+            {
+                ["ipv6Configuration"] = new JsonObject
+                {
+                    ["interfaceType"] = "STATIC",
+                    ["hostIpAddress"] = "2001:db8::1",
+                    ["prefixLength"] = 64
+                }
+            },
+            mergeChanges: true,
+            allowReferenced: false,
+            CancellationToken.None);
+
+        var proposedIpv6 = preview.ProposedBody!["ipv6Configuration"]!.AsObject();
+        Assert.Equal("STATIC", proposedIpv6["interfaceType"]!.GetValue<string>());
+        Assert.Equal("2001:db8::1", proposedIpv6["hostIpAddress"]!.GetValue<string>());
+        Assert.Equal(64, proposedIpv6["prefixLength"]!.GetValue<int>());
+        Assert.False(proposedIpv6.ContainsKey("prefixDelegationWanInterfaceId"));
+
+        await fixture.Planner.ApplyAsync(preview.ConfirmationToken, CancellationToken.None);
+
+        Assert.True(JsonNode.DeepEquals(preview.ProposedBody, fixture.Client.LastMutation!.Body));
+    }
+
+    [Fact]
     public async Task Bulk_voucher_preview_resolves_exact_ids_and_redacts_codes()
     {
         var fixture = CreateFixture();
@@ -285,6 +395,47 @@ public sealed class WritePlannerTests
                 ["referenceCount"] = count
             }
         }
+    };
+
+    private static JsonObject GatewayNetwork() => new()
+    {
+        ["id"] = DeviceId,
+        ["default"] = false,
+        ["enabled"] = true,
+        ["management"] = "GATEWAY",
+        ["metadata"] = new JsonObject { ["origin"] = "USER_DEFINED" },
+        ["name"] = "Office",
+        ["vlanId"] = 20,
+        ["cellularBackupEnabled"] = true,
+        ["internetAccessEnabled"] = true,
+        ["ipv4Configuration"] = new JsonObject
+        {
+            ["autoScaleEnabled"] = false,
+            ["hostIpAddress"] = "192.0.2.1",
+            ["prefixLength"] = 24
+        },
+        ["ipv6Configuration"] = new JsonObject
+        {
+            ["interfaceType"] = "PREFIX_DELEGATION",
+            ["prefixDelegationWanInterfaceId"] = "00000000-0000-0000-0000-000000000003",
+            ["clientAddressAssignment"] = new JsonObject
+            {
+                ["slaacEnabled"] = true,
+                ["dhcpConfiguration"] = new JsonObject
+                {
+                    ["ipAddressSuffixRange"] = new JsonObject
+                    {
+                        ["start"] = "::2",
+                        ["stop"] = "::7d1"
+                    },
+                    ["leaseTimeSeconds"] = 86400
+                }
+            },
+            ["routerAdvertisement"] = new JsonObject { ["priority"] = "HIGH" }
+        },
+        ["isolationEnabled"] = false,
+        ["mdnsForwardingEnabled"] = true,
+        ["zoneId"] = "00000000-0000-0000-0000-000000000004"
     };
 
     private static ValidatedRequest DeviceMutation()
