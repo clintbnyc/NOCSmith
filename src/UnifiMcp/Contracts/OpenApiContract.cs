@@ -162,27 +162,117 @@ public sealed partial class OpenApiContract
 
     public JsonNode? ProjectToRequestSchema(JsonNode? source, OperationDefinition operation)
     {
-        if (source is not JsonObject sourceObject || operation.RequestSchema is null)
+        if (operation.RequestSchema is null)
         {
             return source?.DeepClone();
         }
 
-        var schema = Resolve(operation.RequestSchema);
-        if (schema["properties"] is not JsonObject properties)
+        return ProjectToSchema(
+            source,
+            operation.RequestSchema,
+            "current resource",
+            new HashSet<string>(StringComparer.Ordinal));
+    }
+
+    private JsonNode? ProjectToSchema(
+        JsonNode? source,
+        JsonObject schemaNode,
+        string path,
+        HashSet<string> visitedReferences)
+    {
+        if (source is null)
+        {
+            return null;
+        }
+
+        var reference = schemaNode["$ref"]?.GetValue<string>();
+        if (reference is not null && !visitedReferences.Add(reference))
+        {
+            return source is JsonObject ? new JsonObject() : source.DeepClone();
+        }
+
+        var schema = Resolve(schemaNode);
+        if (source is JsonArray sourceArray && schema["items"] is JsonObject itemSchema)
+        {
+            var projectedArray = new JsonArray();
+            foreach (var item in sourceArray)
+            {
+                projectedArray.Add(ProjectToSchema(
+                    item,
+                    itemSchema,
+                    path + "[]",
+                    new HashSet<string>(StringComparer.Ordinal)));
+            }
+
+            return projectedArray;
+        }
+
+        if (source is not JsonObject sourceObject)
         {
             return source.DeepClone();
         }
 
         var projected = new JsonObject();
-        foreach (var property in properties)
+        var constrained = false;
+        if (schema["allOf"] is JsonArray allOf)
         {
-            if (sourceObject.TryGetPropertyValue(property.Key, out var value))
+            foreach (var part in allOf.OfType<JsonObject>())
             {
-                projected[property.Key] = value?.DeepClone();
+                constrained = true;
+                MergeProjection(
+                    projected,
+                    ProjectToSchema(
+                        sourceObject,
+                        part,
+                        path,
+                        new HashSet<string>(visitedReferences, StringComparer.Ordinal)));
             }
         }
 
-        return projected;
+        if (schema["properties"] is JsonObject properties)
+        {
+            constrained = true;
+            foreach (var property in properties)
+            {
+                if (property.Value is JsonObject propertySchema &&
+                    sourceObject.TryGetPropertyValue(property.Key, out var value))
+                {
+                    projected[property.Key] = ProjectToSchema(
+                        value,
+                        propertySchema,
+                        $"{path}.{property.Key}",
+                        new HashSet<string>(StringComparer.Ordinal));
+                }
+            }
+        }
+
+        var discriminatorSchema = ResolveDiscriminatorSchema(schema, sourceObject, path);
+        if (discriminatorSchema is not null)
+        {
+            constrained = true;
+            MergeProjection(
+                projected,
+                ProjectToSchema(
+                    sourceObject,
+                    discriminatorSchema,
+                    path,
+                    new HashSet<string>(visitedReferences, StringComparer.Ordinal)));
+        }
+
+        return constrained ? projected : source.DeepClone();
+    }
+
+    private static void MergeProjection(JsonObject target, JsonNode? projection)
+    {
+        if (projection is not JsonObject projectedObject)
+        {
+            return;
+        }
+
+        foreach (var property in projectedObject)
+        {
+            target[property.Key] = property.Value?.DeepClone();
+        }
     }
 
     private static IReadOnlyDictionary<string, OperationDefinition> ParseOperations(JsonObject document)
@@ -254,15 +344,49 @@ public sealed partial class OpenApiContract
         return result;
     }
 
-    private void ValidateSchema(JsonNode node, JsonObject schemaNode, string path)
+    private void ValidateSchema(JsonNode node, JsonObject schemaNode, string path) =>
+        ValidateSchema(
+            node,
+            schemaNode,
+            path,
+            new HashSet<string>(StringComparer.Ordinal));
+
+    private void ValidateSchema(
+        JsonNode node,
+        JsonObject schemaNode,
+        string path,
+        HashSet<string> visitedReferences)
     {
+        var reference = schemaNode["$ref"]?.GetValue<string>();
+        if (reference is not null && !visitedReferences.Add(reference))
+        {
+            return;
+        }
+
         var schema = Resolve(schemaNode);
 
         if (schema["allOf"] is JsonArray allOf)
         {
             foreach (var part in allOf.OfType<JsonObject>())
             {
-                ValidateSchema(node, part, path);
+                ValidateSchema(
+                    node,
+                    part,
+                    path,
+                    new HashSet<string>(visitedReferences, StringComparer.Ordinal));
+            }
+        }
+
+        if (node is JsonObject discriminatorObject)
+        {
+            var discriminatorSchema = ResolveDiscriminatorSchema(schema, discriminatorObject, path);
+            if (discriminatorSchema is not null)
+            {
+                ValidateSchema(
+                    node,
+                    discriminatorSchema,
+                    path,
+                    new HashSet<string>(visitedReferences, StringComparer.Ordinal));
             }
         }
 
@@ -325,6 +449,35 @@ public sealed partial class OpenApiContract
         {
             throw new ContractException($"{path} is not one of the allowed values.");
         }
+    }
+
+    private static JsonObject? ResolveDiscriminatorSchema(JsonObject schema, JsonObject source, string path)
+    {
+        if (schema["discriminator"] is not JsonObject discriminator)
+        {
+            return null;
+        }
+
+        var propertyName = discriminator["propertyName"]?.GetValue<string>()
+            ?? throw new ContractException("OpenAPI discriminator is missing propertyName.");
+        if (!source.TryGetPropertyValue(propertyName, out var discriminatorNode) ||
+            discriminatorNode is not JsonValue discriminatorValue ||
+            !discriminatorValue.TryGetValue<string>(out var selectedValue) ||
+            string.IsNullOrWhiteSpace(selectedValue))
+        {
+            throw new ContractException($"{path}.{propertyName} must select a discriminator variant.");
+        }
+
+        if (discriminator["mapping"] is not JsonObject mapping ||
+            mapping[selectedValue] is not JsonValue mappingValue ||
+            !mappingValue.TryGetValue<string>(out var mappedReference) ||
+            string.IsNullOrWhiteSpace(mappedReference))
+        {
+            throw new ContractException(
+                $"{path}.{propertyName} value '{selectedValue}' does not select a supported discriminator variant.");
+        }
+
+        return new JsonObject { ["$ref"] = mappedReference };
     }
 
     private void ValidateObject(JsonObject obj, JsonObject schema, string path)
@@ -613,7 +766,7 @@ public sealed partial class OpenApiContract
             return array.Select(item => item?.GetValue<string>()).FirstOrDefault(item => item != "null");
         }
 
-        return schema.ContainsKey("properties") ? "object" : null;
+        return schema.ContainsKey("properties") || schema.ContainsKey("required") ? "object" : null;
     }
 
     private static bool AllowsNull(JsonObject schema) =>

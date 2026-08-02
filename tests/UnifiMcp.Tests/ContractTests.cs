@@ -123,4 +123,29 @@ public sealed class ContractTests
             new JsonObject { ["name"] = "test", ["timeLimitMinutes"] = 1, ["count"] = 1000 });
         Assert.NotNull(request.Body);
     }
+
+    [Fact]
+    public void Gateway_network_validation_follows_discriminator_required_fields()
+    {
+        var contract = OpenApiContract.LoadEmbedded();
+        var operation = contract.GetOperation("updateNetwork", requireRead: false);
+        var path = new Dictionary<string, string>
+        {
+            ["siteId"] = "00000000-0000-0000-0000-000000000001",
+            ["networkId"] = "00000000-0000-0000-0000-000000000002"
+        };
+        var incompleteGatewayBody = new JsonObject
+        {
+            ["enabled"] = true,
+            ["management"] = "GATEWAY",
+            ["name"] = "Office",
+            ["vlanId"] = 20
+        };
+
+        var exception = Assert.Throws<ContractException>(() =>
+            contract.ValidateAndBuild(operation, path, null, incompleteGatewayBody));
+
+        Assert.Contains("cellularBackupEnabled", exception.Message, StringComparison.Ordinal);
+        Assert.Contains("required", exception.Message, StringComparison.Ordinal);
+    }
 }
