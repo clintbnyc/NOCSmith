@@ -148,4 +148,47 @@ public sealed class ContractTests
         Assert.Contains("cellularBackupEnabled", exception.Message, StringComparison.Ordinal);
         Assert.Contains("required", exception.Message, StringComparison.Ordinal);
     }
+
+    [Theory]
+    [InlineData("tcp")]
+    [InlineData("ax.25")]
+    [InlineData("idpr-cmtp")]
+    public void Firewall_policy_validation_accepts_named_protocol_wire_values(string protocolName)
+    {
+        var contract = OpenApiContract.LoadEmbedded();
+        var operation = contract.GetOperation("createFirewallPolicy", requireRead: false);
+        var path = new Dictionary<string, string>
+        {
+            ["siteId"] = "00000000-0000-0000-0000-000000000001"
+        };
+        var body = new JsonObject
+        {
+            ["action"] = new JsonObject { ["type"] = "BLOCK" },
+            ["destination"] = new JsonObject
+            {
+                ["zoneId"] = "00000000-0000-0000-0000-000000000002"
+            },
+            ["enabled"] = true,
+            ["ipProtocolScope"] = new JsonObject
+            {
+                ["ipVersion"] = "IPV4",
+                ["protocolFilter"] = new JsonObject
+                {
+                    ["type"] = "NAMED_PROTOCOL",
+                    ["matchOpposite"] = false,
+                    ["protocol"] = new JsonObject { ["name"] = protocolName }
+                }
+            },
+            ["loggingEnabled"] = false,
+            ["name"] = "Allow DNS",
+            ["source"] = new JsonObject
+            {
+                ["zoneId"] = "00000000-0000-0000-0000-000000000003"
+            }
+        };
+
+        var request = contract.ValidateAndBuild(operation, path, null, body);
+
+        Assert.True(JsonNode.DeepEquals(body, request.Body));
+    }
 }

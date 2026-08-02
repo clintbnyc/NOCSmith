@@ -174,6 +174,40 @@ public sealed class WritePlannerTests
     }
 
     [Fact]
+    public async Task Gateway_network_update_discards_previous_ipv6_variant_fields()
+    {
+        var fixture = CreateFixture();
+        fixture.Client.State = GatewayNetwork();
+
+        var preview = await fixture.Planner.PreviewAsync(
+            "updateNetwork",
+            new Dictionary<string, string> { ["siteId"] = SiteId, ["networkId"] = DeviceId },
+            null,
+            new JsonObject
+            {
+                ["ipv6Configuration"] = new JsonObject
+                {
+                    ["interfaceType"] = "STATIC",
+                    ["hostIpAddress"] = "2001:db8::1",
+                    ["prefixLength"] = 64
+                }
+            },
+            mergeChanges: true,
+            allowReferenced: false,
+            CancellationToken.None);
+
+        var proposedIpv6 = preview.ProposedBody!["ipv6Configuration"]!.AsObject();
+        Assert.Equal("STATIC", proposedIpv6["interfaceType"]!.GetValue<string>());
+        Assert.Equal("2001:db8::1", proposedIpv6["hostIpAddress"]!.GetValue<string>());
+        Assert.Equal(64, proposedIpv6["prefixLength"]!.GetValue<int>());
+        Assert.False(proposedIpv6.ContainsKey("prefixDelegationWanInterfaceId"));
+
+        await fixture.Planner.ApplyAsync(preview.ConfirmationToken, CancellationToken.None);
+
+        Assert.True(JsonNode.DeepEquals(preview.ProposedBody, fixture.Client.LastMutation!.Body));
+    }
+
+    [Fact]
     public async Task Bulk_voucher_preview_resolves_exact_ids_and_redacts_codes()
     {
         var fixture = CreateFixture();

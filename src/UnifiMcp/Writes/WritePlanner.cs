@@ -61,7 +61,8 @@ public sealed class WritePlanner
                 throw new ContractException("This update cannot be merged because the current resource could not be read.");
             }
 
-            var projected = contract.ProjectToRequestSchema(before, operation);
+            var discriminatorSource = JsonOverlay.Apply(before, body);
+            var projected = contract.ProjectToRequestSchema(before, discriminatorSource, operation);
             finalBody = JsonOverlay.Apply(projected, body);
         }
 

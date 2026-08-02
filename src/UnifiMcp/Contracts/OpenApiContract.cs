@@ -160,7 +160,13 @@ public sealed partial class OpenApiContract
         return new ValidatedRequest(operation, relativeUri, body?.DeepClone());
     }
 
-    public JsonNode? ProjectToRequestSchema(JsonNode? source, OperationDefinition operation)
+    public JsonNode? ProjectToRequestSchema(JsonNode? source, OperationDefinition operation) =>
+        ProjectToRequestSchema(source, source, operation);
+
+    public JsonNode? ProjectToRequestSchema(
+        JsonNode? source,
+        JsonNode? discriminatorSource,
+        OperationDefinition operation)
     {
         if (operation.RequestSchema is null)
         {
@@ -169,6 +175,7 @@ public sealed partial class OpenApiContract
 
         return ProjectToSchema(
             source,
+            discriminatorSource,
             operation.RequestSchema,
             "current resource",
             new HashSet<string>(StringComparer.Ordinal));
@@ -176,6 +183,7 @@ public sealed partial class OpenApiContract
 
     private JsonNode? ProjectToSchema(
         JsonNode? source,
+        JsonNode? discriminatorSource,
         JsonObject schemaNode,
         string path,
         HashSet<string> visitedReferences)
@@ -195,10 +203,14 @@ public sealed partial class OpenApiContract
         if (source is JsonArray sourceArray && schema["items"] is JsonObject itemSchema)
         {
             var projectedArray = new JsonArray();
-            foreach (var item in sourceArray)
+            var discriminatorArray = discriminatorSource as JsonArray;
+            for (var index = 0; index < sourceArray.Count; index++)
             {
                 projectedArray.Add(ProjectToSchema(
-                    item,
+                    sourceArray[index],
+                    discriminatorArray is not null && index < discriminatorArray.Count
+                        ? discriminatorArray[index]
+                        : sourceArray[index],
                     itemSchema,
                     path + "[]",
                     new HashSet<string>(StringComparer.Ordinal)));
@@ -212,6 +224,7 @@ public sealed partial class OpenApiContract
             return source.DeepClone();
         }
 
+        var discriminatorObject = discriminatorSource as JsonObject ?? sourceObject;
         var projected = new JsonObject();
         var constrained = false;
         if (schema["allOf"] is JsonArray allOf)
@@ -223,6 +236,7 @@ public sealed partial class OpenApiContract
                     projected,
                     ProjectToSchema(
                         sourceObject,
+                        discriminatorObject,
                         part,
                         path,
                         new HashSet<string>(visitedReferences, StringComparer.Ordinal)));
@@ -237,8 +251,14 @@ public sealed partial class OpenApiContract
                 if (property.Value is JsonObject propertySchema &&
                     sourceObject.TryGetPropertyValue(property.Key, out var value))
                 {
+                    var propertyDiscriminatorSource = discriminatorObject.TryGetPropertyValue(
+                        property.Key,
+                        out var discriminatorValue)
+                        ? discriminatorValue
+                        : value;
                     projected[property.Key] = ProjectToSchema(
                         value,
+                        propertyDiscriminatorSource,
                         propertySchema,
                         $"{path}.{property.Key}",
                         new HashSet<string>(StringComparer.Ordinal));
@@ -246,7 +266,7 @@ public sealed partial class OpenApiContract
             }
         }
 
-        var discriminatorSchema = ResolveDiscriminatorSchema(schema, sourceObject, path);
+        var discriminatorSchema = ResolveDiscriminatorSchema(schema, discriminatorObject, path);
         if (discriminatorSchema is not null)
         {
             constrained = true;
@@ -254,6 +274,7 @@ public sealed partial class OpenApiContract
                 projected,
                 ProjectToSchema(
                     sourceObject,
+                    discriminatorObject,
                     discriminatorSchema,
                     path,
                     new HashSet<string>(visitedReferences, StringComparer.Ordinal)));
@@ -468,8 +489,15 @@ public sealed partial class OpenApiContract
             throw new ContractException($"{path}.{propertyName} must select a discriminator variant.");
         }
 
-        if (discriminator["mapping"] is not JsonObject mapping ||
-            mapping[selectedValue] is not JsonValue mappingValue ||
+        if (discriminator["mapping"] is not JsonObject mapping)
+        {
+            throw new ContractException("OpenAPI discriminator is missing mapping.");
+        }
+
+        var mappingKey = mapping.ContainsKey(selectedValue)
+            ? selectedValue
+            : EncodeDiscriminatorValue(selectedValue);
+        if (mapping[mappingKey] is not JsonValue mappingValue ||
             !mappingValue.TryGetValue<string>(out var mappedReference) ||
             string.IsNullOrWhiteSpace(mappedReference))
         {
@@ -479,6 +507,10 @@ public sealed partial class OpenApiContract
 
         return new JsonObject { ["$ref"] = mappedReference };
     }
+
+    private static string EncodeDiscriminatorValue(string value) =>
+        string.Concat(value.Select(character =>
+            char.IsLetterOrDigit(character) ? char.ToUpperInvariant(character) : '_'));
 
     private void ValidateObject(JsonObject obj, JsonObject schema, string path)
     {
