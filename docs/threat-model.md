@@ -8,7 +8,7 @@ This document is the authoritative, repository-scoped threat model for
 changes. It describes security boundaries and vulnerability classes, not known
 vulnerabilities in the current revision.
 
-Last reviewed: 2026-08-01.
+Last reviewed: 2026-08-09.
 
 Update this model when a change adds a transport, authentication mode, upstream
 API, write category, persistent data field, executable input, deployment
@@ -138,7 +138,8 @@ chain threat rather than ordinary MCP input.
    discovery may also read the fixed same-origin sibling resource
    `/proxy/network/api-docs/integration.json`; caller input cannot select that
    path or another controller resource, and contract responses are capped at
-   2 MiB before JSON parsing.
+   2 MiB before JSON parsing. Normal official and fixed private API read
+   responses are capped at 16 MiB before parsing.
 4. **Connector to UniFi Site Manager.** The origin is fixed to
    `https://api.ui.com`; a separate optional key is used. Only stable-v1
    inventory and ISP-metric reads are intended.
@@ -312,7 +313,8 @@ treat transport authentication as fine-grained write authorization.
 
 Relevant code: `SecretRedactor.cs`, `ToolResponse.cs`,
 `ResponseMetadata.cs`, `PrivateReadResponseParser.cs`, the enrichment/read
-services (including `WifiDiagnosticsReadService.cs`), and `SnapshotService.cs`.
+services (including `WifiDiagnosticsReadService.cs` and
+`ClientTrafficReadService.cs`), and `SnapshotService.cs`.
 
 Upstream JSON can be malformed, contradictory, oversized, stale, or contain
 secret-like or instruction-like text. The connector must preserve provenance,
@@ -332,6 +334,24 @@ time; epoch or ambiguous duration-like values are not passed through. Wired or
 transport-unknown client records are excluded before output limits, nested
 radio arrays have per-device and aggregate source ceilings, and anonymous
 configuration/statistics records are not correlated by array position.
+
+The client-traffic projection joins a complete official current-client
+inventory to one bounded fixed private active-client response by normalized MAC.
+It preserves zero separately from unavailable data, retains source-relative
+rx/tx direction instead of inferring upload/download, suppresses private rate
+fields whose perspective/unit/window are unverified, ranks null values last,
+and suppresses private-only records. An unavailable private source preserves
+the authoritative official client inventory with null traffic fields.
+The switch-port projection adds one fixed read-only port-profile resource and
+uses private profile/network IDs only as internal join keys. Network names and
+VLAN IDs come from a bounded official inventory; missing or incomplete joins
+remain unresolved. Official operational link/PoE state stays separate from
+private configuration and watt telemetry, voltage/current are omitted until
+their units are verified, and the ambiguous UI Edge/Participant role remains
+unavailable. A failed optional network inventory does not discard unrelated
+legacy port enrichment. Private devices, profiles, ports, networks, traffic
+records, returned rankings, and pre-parse response bytes all have explicit
+ceilings.
 
 Prompt injection through device names, comments, or System Log descriptions
 is not code execution in this repository, but it becomes security-relevant if

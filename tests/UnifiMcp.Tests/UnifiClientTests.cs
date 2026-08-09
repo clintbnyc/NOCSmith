@@ -67,6 +67,34 @@ public sealed class UnifiClientTests
         Assert.Contains("2097152-byte safety limit", exception.Message, StringComparison.Ordinal);
     }
 
+    [Theory]
+    [InlineData("clients", true)]
+    [InlineData("clients", false)]
+    [InlineData("profiles", true)]
+    public async Task Private_reads_reject_oversized_responses_before_parsing(
+        string resource,
+        bool includeContentLength)
+    {
+        var oversized = new string('x', 16 * 1024 * 1024 + 1);
+        var content = new StringContent(oversized);
+        if (!includeContentLength)
+        {
+            content.Headers.ContentLength = null;
+        }
+
+        var handler = new RecordingHandler(_ => new HttpResponseMessage(HttpStatusCode.OK)
+        {
+            Content = content
+        });
+        using var client = CreateClient(handler);
+
+        var exception = await Assert.ThrowsAsync<ContractException>(() => resource == "clients"
+            ? client.ReadPrivateClientsAsync("default", CancellationToken.None)
+            : client.ReadPortProfilesAsync("default", CancellationToken.None));
+
+        Assert.Contains("16777216-byte safety limit", exception.Message, StringComparison.Ordinal);
+    }
+
     [Fact]
     public async Task Read_retries_transient_status_but_mutation_does_not()
     {
@@ -184,6 +212,7 @@ public sealed class UnifiClientTests
         using var client = CreateClient(handler);
 
         await client.ReadLegacyDevicesAsync("default", CancellationToken.None);
+        await client.ReadPortProfilesAsync("default", CancellationToken.None);
         await client.ReadPrivateClientsAsync("default", CancellationToken.None);
         await client.ReadClientHistoryAsync("default", 24, CancellationToken.None);
         await client.ReadNetworkMembersGroupsAsync("default", CancellationToken.None);
@@ -195,6 +224,13 @@ public sealed class UnifiClientTests
             {
                 Assert.Equal("GET", request.Method);
                 Assert.Equal("https://unifi.nutria-newton.ts.net/proxy/network/api/s/default/stat/device", request.Uri);
+                Assert.Equal("test-api-key", request.ApiKey);
+                Assert.Null(request.Body);
+            },
+            request =>
+            {
+                Assert.Equal("GET", request.Method);
+                Assert.Equal("https://unifi.nutria-newton.ts.net/proxy/network/api/s/default/rest/portconf", request.Uri);
                 Assert.Equal("test-api-key", request.ApiKey);
                 Assert.Null(request.Body);
             },
@@ -265,6 +301,8 @@ public sealed class UnifiClientTests
 
         await Assert.ThrowsAsync<ArgumentException>(() =>
             client.ReadLegacyDevicesAsync("../default", CancellationToken.None));
+        await Assert.ThrowsAsync<ArgumentException>(() =>
+            client.ReadPortProfilesAsync("../default", CancellationToken.None));
         await Assert.ThrowsAsync<ArgumentException>(() =>
             client.ReadClientHistoryAsync("../default", 24, CancellationToken.None));
         await Assert.ThrowsAsync<ArgumentException>(() =>

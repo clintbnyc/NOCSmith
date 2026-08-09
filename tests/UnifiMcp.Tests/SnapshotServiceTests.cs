@@ -86,6 +86,7 @@ public sealed class SnapshotServiceTests
         var enrichment = new LegacyReadEnrichmentService(
             configuration,
             client,
+            contracts,
             resolver,
             redactor,
             NullLogger<LegacyReadEnrichmentService>.Instance);

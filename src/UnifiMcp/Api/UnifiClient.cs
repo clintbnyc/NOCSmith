@@ -13,6 +13,7 @@ namespace UnifiMcp.Api;
 public sealed class UnifiClient : IUnifiClient, IDisposable
 {
     private const int MaximumContractResponseBytes = 2 * 1024 * 1024;
+    private const int MaximumApiResponseBytes = 16 * 1024 * 1024;
 
     private static readonly HashSet<HttpStatusCode> RetryableStatuses = new()
     {
@@ -52,7 +53,12 @@ public sealed class UnifiClient : IUnifiClient, IDisposable
             throw new InvalidOperationException("ReadAsync cannot execute a mutation.");
         }
 
-        return SendWithReadRetriesAsync(request.Operation.Method, request.RelativeUri, request.Body, cancellationToken);
+        return SendWithReadRetriesAsync(
+            request.Operation.Method,
+            request.RelativeUri,
+            request.Body,
+            cancellationToken,
+            MaximumApiResponseBytes);
     }
 
     public Task<JsonNode?> MutateAsync(ValidatedRequest request, CancellationToken cancellationToken)
@@ -85,14 +91,24 @@ public sealed class UnifiClient : IUnifiClient, IDisposable
             HttpMethod.Get,
             BuildLegacyReadPath(internalSiteReference, "stat/device"),
             null,
-            cancellationToken);
+            cancellationToken,
+            MaximumApiResponseBytes);
+
+    public Task<JsonNode?> ReadPortProfilesAsync(string internalSiteReference, CancellationToken cancellationToken) =>
+        SendWithReadRetriesAsync(
+            HttpMethod.Get,
+            BuildLegacyReadPath(internalSiteReference, "rest/portconf"),
+            null,
+            cancellationToken,
+            MaximumApiResponseBytes);
 
     public Task<JsonNode?> ReadPrivateClientsAsync(string internalSiteReference, CancellationToken cancellationToken) =>
         SendWithReadRetriesAsync(
             HttpMethod.Get,
             BuildPrivateClientReadPath(internalSiteReference),
             null,
-            cancellationToken);
+            cancellationToken,
+            MaximumApiResponseBytes);
 
     public Task<JsonNode?> ReadClientHistoryAsync(
         string internalSiteReference,
@@ -102,21 +118,24 @@ public sealed class UnifiClient : IUnifiClient, IDisposable
             HttpMethod.Get,
             BuildClientHistoryReadPath(internalSiteReference, withinHours),
             null,
-            cancellationToken);
+            cancellationToken,
+            MaximumApiResponseBytes);
 
     public Task<JsonNode?> ReadNetworkMembersGroupsAsync(string internalSiteReference, CancellationToken cancellationToken) =>
         SendWithReadRetriesAsync(
             HttpMethod.Get,
             BuildNetworkMembersGroupsReadPath(internalSiteReference),
             null,
-            cancellationToken);
+            cancellationToken,
+            MaximumApiResponseBytes);
 
     public Task<JsonNode?> QuerySystemLogsAsync(string internalSiteReference, CancellationToken cancellationToken) =>
         SendWithReadRetriesAsync(
             HttpMethod.Post,
             BuildSystemLogReadPath(internalSiteReference),
             new JsonObject(),
-            cancellationToken);
+            cancellationToken,
+            MaximumApiResponseBytes);
 
     public void Dispose() => _httpClient.Dispose();
 
@@ -208,7 +227,7 @@ public sealed class UnifiClient : IUnifiClient, IDisposable
                 if (response.Content.Headers.ContentLength > maximumResponseBytes)
                 {
                     throw new ContractException(
-                        $"UniFi fixed response exceeded the {maximumResponseBytes}-byte safety limit.");
+                        $"UniFi response exceeded the {maximumResponseBytes}-byte safety limit.");
                 }
 
                 try
@@ -220,7 +239,7 @@ public sealed class UnifiClient : IUnifiClient, IDisposable
                 catch (HttpRequestException exception)
                 {
                     throw new ContractException(
-                        $"UniFi fixed response exceeded the {maximumResponseBytes}-byte safety limit.",
+                        $"UniFi response exceeded the {maximumResponseBytes}-byte safety limit.",
                         exception);
                 }
             }
