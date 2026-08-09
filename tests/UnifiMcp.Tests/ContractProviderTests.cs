@@ -1,4 +1,5 @@
 using System.Net;
+using System.Text;
 using System.Text.Json.Nodes;
 using Microsoft.Extensions.Logging.Abstractions;
 using UnifiMcp.Api;
@@ -165,6 +166,124 @@ public sealed class ContractProviderTests
     }
 
     [Fact]
+    public async Task Controller_contract_is_not_accepted_when_live_version_is_unavailable()
+    {
+        var provider = new ContractProvider(
+            OpenApiContract.LoadEmbedded(),
+            new StubControllerClient(null, CreateContract("10.5.67")),
+            NullLogger<ContractProvider>.Instance);
+
+        await provider.RefreshAsync(CancellationToken.None);
+
+        Assert.Null(provider.LiveApplicationVersion);
+        Assert.Equal("embedded", provider.Current.Source);
+        Assert.Equal("unverified", provider.Status);
+        Assert.Contains("unknown", provider.LastProbeWarning, StringComparison.Ordinal);
+    }
+
+    [Theory]
+    [InlineData("missing-target")]
+    [InlineData("object")]
+    [InlineData("number")]
+    public async Task Controller_contract_with_malformed_response_reference_falls_back_to_embedded(
+        string malformedReference)
+    {
+        var controllerContract = CreateContract("10.5.67");
+        JsonNode reference = malformedReference switch
+        {
+            "missing-target" => JsonValue.Create("#/components/schemas/MissingResponse"),
+            "object" => new JsonObject(),
+            "number" => JsonValue.Create(1),
+            _ => throw new ArgumentOutOfRangeException(nameof(malformedReference))
+        };
+        SetGetInfoResponseSchema(
+            controllerContract,
+            new JsonObject { ["$ref"] = reference });
+        var provider = new ContractProvider(
+            OpenApiContract.LoadEmbedded(),
+            new StubControllerClient("10.5.67", controllerContract),
+            NullLogger<ContractProvider>.Instance);
+
+        await provider.RefreshAsync(CancellationToken.None);
+
+        Assert.Equal("embedded", provider.Current.Source);
+        Assert.Equal("embedded-match", provider.Status);
+    }
+
+    [Fact]
+    public async Task Controller_contract_with_excessive_response_schema_graph_falls_back_to_embedded()
+    {
+        var controllerContract = CreateContract("10.5.67");
+        var schemas = new JsonObject();
+        for (var index = 0; index < 5000; index++)
+        {
+            schemas[$"Response{index}"] = index == 4999
+                ? new JsonObject { ["type"] = "object" }
+                : new JsonObject
+                {
+                    ["allOf"] = new JsonArray(
+                        new JsonObject { ["$ref"] = $"#/components/schemas/Response{index + 1}" })
+                };
+        }
+
+        controllerContract["components"] = new JsonObject { ["schemas"] = schemas };
+        SetGetInfoResponseSchema(
+            controllerContract,
+            new JsonObject { ["$ref"] = "#/components/schemas/Response0" });
+        Assert.InRange(
+            Encoding.UTF8.GetByteCount(controllerContract.ToJsonString()),
+            1,
+            (2 * 1024 * 1024) - 1);
+        var provider = new ContractProvider(
+            OpenApiContract.LoadEmbedded(),
+            new StubControllerClient("10.5.67", controllerContract),
+            NullLogger<ContractProvider>.Instance);
+
+        await provider.RefreshAsync(CancellationToken.None);
+
+        Assert.Equal("embedded", provider.Current.Source);
+        Assert.Equal("embedded-match", provider.Status);
+    }
+
+    [Fact]
+    public async Task Bounded_branching_controller_response_schema_preserves_capability_detection()
+    {
+        var controllerContract = CreateContract("10.5.67");
+        var schemas = new JsonObject();
+        for (var index = 0; index < 40; index++)
+        {
+            schemas[$"Response{index}"] = new JsonObject
+            {
+                ["anyOf"] = new JsonArray(
+                    new JsonObject { ["$ref"] = $"#/components/schemas/Response{index + 1}" },
+                    new JsonObject { ["$ref"] = $"#/components/schemas/Response{index + 1}" })
+            };
+        }
+
+        schemas["Response40"] = new JsonObject
+        {
+            ["type"] = "object",
+            ["properties"] = new JsonObject
+            {
+                ["boundedCapability"] = new JsonObject { ["type"] = "string" }
+            }
+        };
+        controllerContract["components"] = new JsonObject { ["schemas"] = schemas };
+        SetGetInfoResponseSchema(
+            controllerContract,
+            new JsonObject { ["$ref"] = "#/components/schemas/Response0" });
+        var provider = new ContractProvider(
+            OpenApiContract.LoadEmbedded(),
+            new StubControllerClient("10.5.67", controllerContract),
+            NullLogger<ContractProvider>.Instance);
+
+        await provider.RefreshAsync(CancellationToken.None);
+
+        Assert.Equal("controller-match", provider.Status);
+        Assert.True(provider.Current.ResponseSchemaContainsPath("getInfo", "boundedCapability"));
+    }
+
+    [Fact]
     public async Task Mismatched_authenticated_api_docs_contract_falls_back_to_reviewed_embedded_contract()
     {
         var provider = new ContractProvider(
@@ -200,12 +319,26 @@ public sealed class ContractProviderTests
         }
     };
 
+    private static void SetGetInfoResponseSchema(JsonObject contract, JsonObject schema)
+    {
+        contract["paths"]!["/v1/info"]!["get"]!["responses"] = new JsonObject
+        {
+            ["200"] = new JsonObject
+            {
+                ["content"] = new JsonObject
+                {
+                    ["application/json"] = new JsonObject { ["schema"] = schema }
+                }
+            }
+        };
+    }
+
     private sealed class StubControllerClient : IUnifiClient
     {
-        private readonly string _liveVersion;
+        private readonly string? _liveVersion;
         private readonly JsonObject? _controllerContract;
 
-        public StubControllerClient(string liveVersion, JsonObject? controllerContract = null)
+        public StubControllerClient(string? liveVersion, JsonObject? controllerContract = null)
         {
             _liveVersion = liveVersion;
             _controllerContract = controllerContract;
@@ -214,7 +347,9 @@ public sealed class ContractProviderTests
         public List<string> FixedPaths { get; } = new();
 
         public Task<JsonNode?> ReadAsync(ValidatedRequest request, CancellationToken cancellationToken) =>
-            Task.FromResult<JsonNode?>(new JsonObject { ["applicationVersion"] = _liveVersion });
+            Task.FromResult<JsonNode?>(_liveVersion is null
+                ? new JsonObject()
+                : new JsonObject { ["applicationVersion"] = _liveVersion });
 
         public Task<JsonNode?> MutateAsync(ValidatedRequest request, CancellationToken cancellationToken) =>
             throw new NotSupportedException();

@@ -25,7 +25,7 @@ public sealed class SiteManagerReadService
     private readonly TimeProvider _timeProvider;
     private readonly object _cacheGate = new();
     private readonly Dictionary<string, CacheEntry> _cache = new(StringComparer.Ordinal);
-    private readonly ConcurrentDictionary<string, Lazy<Task<JsonNode?>>> _inflight = new(StringComparer.Ordinal);
+    private readonly ConcurrentDictionary<string, Lazy<Task<CachedRead>>> _inflight = new(StringComparer.Ordinal);
     private long _cacheAccessSequence;
 
     public SiteManagerReadService(
@@ -86,12 +86,15 @@ public sealed class SiteManagerReadService
                             "Unsupported Site Manager action. Allowed actions: hosts, host, sites, devices.");
                 }
 
-                var observedAt = _timeProvider.GetUtcNow();
                 var response = await GetCachedAsync(
                     relativePath,
                     () => _client.GetAsync(relativePath, CancellationToken.None),
                     cancellationToken).ConfigureAwait(false);
-                return CreateInventoryResponse(normalizedAction, size, response, observedAt);
+                return CreateInventoryResponse(
+                    normalizedAction,
+                    size,
+                    response.Value,
+                    response.ObservedAt);
             });
 
     public Task<ToolResponse> ReadIspMetricsAsync(
@@ -151,10 +154,11 @@ public sealed class SiteManagerReadService
         for (var page = 0; page < MaximumPagesForEnrichment; page++)
         {
             var path = BuildPagePath("v1/devices", DefaultPageSize, nextToken, hostId);
-            var response = await GetCachedAsync(
+            var cached = await GetCachedAsync(
                 path,
                 () => _client.GetAsync(path, CancellationToken.None),
                 cancellationToken).ConfigureAwait(false);
+            var response = cached.Value;
             if (response?["data"] is not JsonArray groups)
             {
                 throw new ContractException("Site Manager devices response did not contain a data array.");
@@ -207,10 +211,11 @@ public sealed class SiteManagerReadService
             for (var page = 0; page < MaximumPagesForHostMapping; page++)
             {
                 var path = BuildPagePath("v1/hosts", DefaultPageSize, nextToken, null);
-                var response = await GetCachedAsync(
+                var cached = await GetCachedAsync(
                     path,
                     () => _client.GetAsync(path, CancellationToken.None),
                     cancellationToken).ConfigureAwait(false);
+                var response = cached.Value;
                 if (response?["data"] is not JsonArray hosts)
                 {
                     throw new ContractException("Site Manager hosts response did not contain a data array.");
@@ -333,62 +338,66 @@ public sealed class SiteManagerReadService
         }
     }
 
-    private async Task<JsonNode?> GetCachedAsync(
+    private async Task<CachedRead> GetCachedAsync(
         string key,
         Func<Task<JsonNode?>> factory,
         CancellationToken cancellationToken)
     {
         var now = _timeProvider.GetUtcNow();
-        if (TryReadCached(key, now, out var cached))
+        var cached = TryReadCached(key, now);
+        if (cached is not null)
         {
             return cached;
         }
 
         var lazy = _inflight.GetOrAdd(
             key,
-            _ => new Lazy<Task<JsonNode?>>(
+            _ => new Lazy<Task<CachedRead>>(
                 async () =>
                 {
+                    var observedAt = _timeProvider.GetUtcNow();
                     var value = await factory().ConfigureAwait(false);
-                    StoreCached(key, value);
-                    return value;
+                    StoreCached(key, value, observedAt);
+                    return new CachedRead(value, observedAt);
                 },
                 LazyThreadSafetyMode.ExecutionAndPublication));
         var task = lazy.Value;
         _ = task.ContinueWith(
             _ => _inflight.TryRemove(
-                new KeyValuePair<string, Lazy<Task<JsonNode?>>>(key, lazy)),
+                new KeyValuePair<string, Lazy<Task<CachedRead>>>(key, lazy)),
             CancellationToken.None,
             TaskContinuationOptions.ExecuteSynchronously,
             TaskScheduler.Default);
         var value = await task.WaitAsync(cancellationToken).ConfigureAwait(false);
-        return value?.DeepClone();
+        return new CachedRead(value.Value?.DeepClone(), value.ObservedAt);
     }
 
-    private bool TryReadCached(
+    private CachedRead? TryReadCached(
         string key,
-        DateTimeOffset now,
-        out JsonNode? value)
+        DateTimeOffset now)
     {
         JsonNode? cachedValue;
+        DateTimeOffset observedAt;
         lock (_cacheGate)
         {
             RemoveExpiredCacheEntries(now);
             if (!_cache.TryGetValue(key, out var cached))
             {
-                value = null;
-                return false;
+                return null;
             }
 
             _cache[key] = cached with { LastAccessSequence = NextCacheAccessSequence() };
             cachedValue = cached.Value;
+            observedAt = cached.ObservedAt;
         }
 
-        value = cachedValue?.DeepClone();
-        return true;
+        return new CachedRead(cachedValue?.DeepClone(), observedAt);
     }
 
-    private void StoreCached(string key, JsonNode? value)
+    private void StoreCached(
+        string key,
+        JsonNode? value,
+        DateTimeOffset observedAt)
     {
         var cachedValue = value?.DeepClone();
         lock (_cacheGate)
@@ -406,6 +415,7 @@ public sealed class SiteManagerReadService
 
             _cache[key] = new CacheEntry(
                 cachedValue,
+                observedAt,
                 now + CacheDuration,
                 NextCacheAccessSequence());
         }
@@ -925,6 +935,11 @@ public sealed class SiteManagerReadService
 
     private sealed record CacheEntry(
         JsonNode? Value,
+        DateTimeOffset ObservedAt,
         DateTimeOffset ExpiresAt,
         long LastAccessSequence);
+
+    private sealed record CachedRead(
+        JsonNode? Value,
+        DateTimeOffset ObservedAt);
 }

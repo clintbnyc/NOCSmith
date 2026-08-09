@@ -6,12 +6,10 @@ namespace UnifiMcp.Tools;
 internal sealed record SystemLogPageMetadata(
     int? PageNumber,
     int? TotalElementCount,
-    int? TotalPageCount)
+    int? TotalPageCount,
+    bool HasAdditionalPages)
 {
     private const int MaximumMetadataValue = 1_000_000_000;
-
-    public bool HasAdditionalPages =>
-        TotalPageCount is int totalPages && totalPages > 1;
 
     public static SystemLogPageMetadata Read(JsonObject response, int pageRecordCount)
     {
@@ -41,7 +39,16 @@ internal sealed record SystemLogPageMetadata(
             }
         }
 
-        return new SystemLogPageMetadata(pageNumber, totalElementCount, totalPageCount);
+        var hasAdditionalPages =
+            pageNumber is > 0 ||
+            totalElementCount is int elements && elements > pageRecordCount ||
+            totalPageCount is > 1;
+
+        return new SystemLogPageMetadata(
+            pageNumber,
+            totalElementCount,
+            totalPageCount,
+            hasAdditionalPages);
     }
 
     private static int? ReadOptionalBoundedInteger(JsonObject response, string propertyName)

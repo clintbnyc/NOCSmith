@@ -249,6 +249,60 @@ public sealed class ContractTests
         Assert.NotNull(unconstrainedObjectRequest.Body);
     }
 
+    [Theory]
+    [InlineData("createAclRule", "IPV4")]
+    [InlineData("updateAclRule", "IPV4")]
+    [InlineData("createAclRule", "MAC")]
+    [InlineData("updateAclRule", "MAC")]
+    public void Acl_rule_filters_are_validated_by_the_selected_discriminator_schema(
+        string operationId,
+        string ruleType)
+    {
+        var contract = OpenApiContract.LoadEmbedded();
+        var operation = contract.GetOperation(operationId, requireRead: false);
+        var path = new Dictionary<string, string>
+        {
+            ["siteId"] = "00000000-0000-0000-0000-000000000001"
+        };
+        if (operationId == "updateAclRule")
+        {
+            path["aclRuleId"] = "00000000-0000-0000-0000-000000000002";
+        }
+
+        var endpoint = ruleType == "IPV4"
+            ? new JsonObject
+            {
+                ["type"] = "IP_ADDRESSES_OR_SUBNETS",
+                ["ipAddressesOrSubnets"] = new JsonArray("192.0.2.0/24")
+            }
+            : new JsonObject
+            {
+                ["type"] = "MAC_ADDRESSES",
+                ["macAddresses"] = new JsonArray("02:00:00:00:00:01")
+            };
+        var body = new JsonObject
+        {
+            ["action"] = "ALLOW",
+            ["enabled"] = true,
+            ["name"] = "Allow test traffic",
+            ["sourceFilter"] = endpoint,
+            ["type"] = ruleType
+        };
+        if (ruleType == "MAC")
+        {
+            body["networkIdFilter"] = "00000000-0000-0000-0000-000000000003";
+        }
+
+        var bodyWithUnknownFilterField = body.DeepClone().AsObject();
+        bodyWithUnknownFilterField["sourceFilter"]!["controllerOnlyField"] = true;
+        var exception = Assert.Throws<ContractException>(() =>
+            contract.ValidateAndBuild(operation, path, null, bodyWithUnknownFilterField));
+        var request = contract.ValidateAndBuild(operation, path, null, body);
+
+        Assert.Contains("body.sourceFilter.controllerOnlyField", exception.Message, StringComparison.Ordinal);
+        Assert.True(JsonNode.DeepEquals(body, request.Body));
+    }
+
     [Fact]
     public void Discriminator_normalization_rejects_aliases_without_declared_wire_enum()
     {

@@ -269,13 +269,16 @@ private System Logs POST has an empty connector-created body and is a read;
 callers cannot choose its method, path, or body.
 
 A controller-served OpenAPI document is a special trust case. It is accepted
-only when parseable and version-matched to the live application, and it may
-supplement response-schema capability detection only for the same reviewed
-operation ID, method, and path. Operation selection, methods, paths,
-parameters, and request validation always use the reviewed embedded contract,
-so a malicious same-version document cannot expand the request allowlist or
-weaken a write schema. Reviews should preserve that split and continue to
-bound controller-supplied response-schema complexity.
+only when parseable, structurally bounded, and exactly version-matched to a
+non-empty live application version, and it may supplement response-schema
+capability detection only for the same reviewed operation ID, method, and
+path. Malformed references and response graphs exceeding 4,096 reachable
+schema nodes fall back to the embedded contract; runtime capability traversal
+is iterative and limited to 16,384 states per query. Operation selection,
+methods, paths, parameters, and request validation always use the reviewed
+embedded contract, so a malicious same-version document cannot expand the
+request allowlist or weaken a write schema. Reviews should preserve that split
+and its complexity ceilings.
 
 The embedded update workflow may ingest an official contract downloaded from
 the authenticated local documentation because the public developer download

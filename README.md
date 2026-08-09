@@ -182,9 +182,10 @@ configuration and automation therefore continue to work without migration.
 - Journal: SQLite WAL on a private local filesystem
 
 At startup the connector probes the live application and controller contract.
-A version-matched controller contract may supplement response-schema
-capability detection, while operation IDs, methods, paths, parameters, and
-request schemas always remain restricted to the reviewed embedded contract.
+A validated, exactly version-matched controller contract may supplement
+bounded response-schema capability detection, while operation IDs, methods,
+paths, parameters, and request schemas always remain restricted to the
+reviewed embedded contract.
 
 ## Documentation
 

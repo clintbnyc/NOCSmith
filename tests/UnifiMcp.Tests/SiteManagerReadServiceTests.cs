@@ -92,6 +92,70 @@ public sealed class SiteManagerReadServiceTests
     }
 
     [Fact]
+    public async Task Cached_discovery_response_preserves_the_provider_observation_time()
+    {
+        var providerObservedAt =
+            new DateTimeOffset(2026, 7, 25, 12, 0, 0, TimeSpan.Zero);
+        var clock = new MutableTimeProvider(providerObservedAt);
+        var client = new FakeSiteManagerClient();
+        var service = CreateService(client, clock);
+
+        var first = await service.ReadInventoryAsync(
+            "sites",
+            null,
+            null,
+            null,
+            CancellationToken.None);
+        clock.Advance(TimeSpan.FromMinutes(4));
+        var cached = await service.ReadInventoryAsync(
+            "sites",
+            null,
+            null,
+            null,
+            CancellationToken.None);
+
+        Assert.Single(client.GetPaths);
+        Assert.Equal(
+            providerObservedAt,
+            DateTimeOffset.Parse(first.Data!["observedAt"]!.GetValue<string>()));
+        Assert.Equal(
+            providerObservedAt,
+            DateTimeOffset.Parse(cached.Data!["observedAt"]!.GetValue<string>()));
+    }
+
+    [Fact]
+    public async Task Fresh_discovery_response_uses_the_new_provider_observation_time()
+    {
+        var firstObservedAt =
+            new DateTimeOffset(2026, 7, 25, 12, 0, 0, TimeSpan.Zero);
+        var clock = new MutableTimeProvider(firstObservedAt);
+        var client = new FakeSiteManagerClient();
+        var service = CreateService(client, clock);
+
+        await service.ReadInventoryAsync(
+            "sites",
+            null,
+            null,
+            null,
+            CancellationToken.None);
+        var freshObservedAt = firstObservedAt +
+            TimeSpan.FromMinutes(5) +
+            TimeSpan.FromTicks(1);
+        clock.Advance(freshObservedAt - firstObservedAt);
+        var fresh = await service.ReadInventoryAsync(
+            "sites",
+            null,
+            null,
+            null,
+            CancellationToken.None);
+
+        Assert.Equal(
+            freshObservedAt,
+            DateTimeOffset.Parse(fresh.Data!["observedAt"]!.GetValue<string>()));
+        Assert.Equal(2, client.GetPaths.Count);
+    }
+
+    [Fact]
     public async Task Discovery_cache_expires_after_five_minutes()
     {
         var clock = new MutableTimeProvider(
