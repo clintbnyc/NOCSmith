@@ -31,7 +31,7 @@ calibration used during security reviews.
 - Site Manager permits only stable `/v1` host, site, device, and ISP-metric reads. Early Access, SD-WAN, Cloud Connector proxying, arbitrary URLs, and Site Manager writes are rejected.
 - Responses, exceptions, snapshots, and previews are recursively redacted. Wi-Fi credentials, API keys, tokens, passwords, pre-shared keys, and hotspot voucher codes are never returned.
 - Read operations retry 429, transient HTTP failures, and timeouts, including the fixed query-style System Logs POST. Mutations are sent exactly once and are never automatically retried.
-- Site Manager requests share a process-local rolling ceiling of 9,000 requests per 60 seconds, 100-request rate-limit and concurrency queues, and four concurrent request slots. Discovery pages use the provider maximum of 500 records and are cached/coalesced for five minutes. A `429` establishes a process-wide cooldown from delta-seconds or HTTP-date `Retry-After`; cooldown waits occur without occupying a dispatch slot, and the permit is rechecked after a slot is acquired so no newly dispatched request bypasses the provider wait. Waits beyond five minutes return structured `rateLimited` metadata.
+- Site Manager requests share a process-local rolling ceiling of 9,000 requests per 60 seconds, 100-request rate-limit and concurrency queues, and four concurrent request slots. Discovery pages use the provider maximum of 500 records and are cached/coalesced for five minutes in a 16-entry least-recently-used cache; expired entries are removed before reuse or insertion. A `429` establishes a process-wide cooldown from delta-seconds or HTTP-date `Retry-After`; cooldown waits occur without occupying a dispatch slot, and the permit is rechecked after a slot is acquired so no newly dispatched request bypasses the provider wait. Waits beyond five minutes return structured `rateLimited` metadata.
 
 ## Prerequisites
 
@@ -129,11 +129,14 @@ The action accepts only the UI's bounded `historyHours` values: `24`, `72`,
 `168`, `336`, `720`, or `4320`; it deliberately rejects the UI's all-time
 value. `offset` and `limit` provide connector-side pagination independently
 over each returned classification, with a maximum limit of 200. The controller
-history response itself is capped at 10,000 records and must match the
-validated object-record contract. Official current-client pages must also
-match their declared count, offset, limit, and total count; incomplete or
-contradictory pagination fails closed rather than risking a false offline
-classification.
+history response itself is capped at 10,000 records. Absence classifications
+additionally require a complete single-page envelope with `offset=0`, `count`
+matching `data`, a positive `limit`, `totalCount=count`, `hasMore=false`, and
+no continuation token. Unwrapped arrays, missing completeness metadata, and
+partial or contradictory pagination remain positive evidence only for journal
+collection; the interactive history action returns `status: notSupported`
+with empty classifications. Official current-client pages must also match
+their declared count, offset, limit, and total count.
 
 Network `10.5.67` may include a `TELEPORT` pseudo-client without a MAC address
 in the bounded history response. Because history reconciliation and the journal
@@ -479,7 +482,7 @@ The server exposes 37 tools:
 - Contract-defined write preview: `unifi_preview_operation`
 - Confirmed apply: `unifi_apply_change`
 
-Official read tools support the contract's offset, limit, and filter parameters. Page responses include `_connector.truncated`; when true, request another page. `unifi_clients` actions `list` and `get` retain the official connected-client semantics; action `history` is the distinct bounded private classification described above and accepts `historyHours`, `offset`, and `limit`. `unifi_client_traffic` ranks a bounded official/private current-client join by nullable received, transmitted, or combined byte counters; it does not normalize source-relative rx/tx into upload/download or expose unverified rates. `unifi_client_groups` supports `list` and `audit`; `includeMembers=true` includes projected configured member MAC addresses. The group audit remains connected-only and does not silently become a history audit. `unifi_wifi_diagnostics` accepts bounded client/radio limits plus an optional exact client MAC and returns nullable, version-aware RF and DHCP/APIPA projections from fixed private resources. `unifi_alerts` accepts a local 1-50 limit over the first System Logs page and reports the controller's page and total counts. Set `includeRead=false` to retain only records whose direct controller status is `NEW`; no meaning is inferred for other status values. Read responses also include observation/source metadata when their response shape can carry it. Device-detail and client responses include `_connector.contract` and `_connector.knownLimitations` when response coverage needs explanation. A site is auto-selected only if exactly one exists or `UNIFI_DEFAULT_SITE_ID` is configured.
+Official read tools support the contract's offset, limit, and filter parameters. Page responses include `_connector.truncated`; when true, request another page. `unifi_clients` actions `list` and `get` retain the official connected-client semantics; action `history` is the distinct bounded private classification described above and accepts `historyHours`, `offset`, and `limit`. `unifi_client_traffic` ranks a bounded official/private current-client join by nullable received, transmitted, or combined byte counters; it does not normalize source-relative rx/tx into upload/download or expose unverified rates. `unifi_client_groups` supports `list` and `audit`; `includeMembers=true` includes projected configured member MAC addresses. The group audit remains connected-only and does not silently become a history audit. `unifi_wifi_diagnostics` accepts bounded client/radio limits plus an optional exact client MAC and returns nullable, version-aware RF and DHCP/APIPA projections from fixed private resources. `unifi_alerts` accepts a local 1-50 limit over the first System Logs page and reports only validated, bounded integer page and total counts. Set `includeRead=false` to retain only records whose direct controller status is `NEW`; no meaning is inferred for other status values. Read responses also include observation/source metadata when their response shape can carry it. Device-detail and client responses include `_connector.contract` and `_connector.knownLimitations` when response coverage needs explanation. A site is auto-selected only if exactly one exists or `UNIFI_DEFAULT_SITE_ID` is configured.
 
 `unifi_site_manager` actions are `hosts`, `host`, `sites`, and `devices`. List actions use `pageSize` from 1 to 500 and return an opaque `pagination.continuation`; pass it back as `nextToken` for the next call. `host` requires `hostId`; `devices` optionally filters by host. `unifi_isp_metrics` accepts interval `5m` or `1h`, duration `24h` for 5-minute metrics, duration `7d` or `30d` for hourly metrics, or explicit RFC3339 timestamps. Optional targeted queries accept an array of `{ hostId, siteId, beginTimestamp?, endTimestamp? }`.
 
@@ -510,7 +513,7 @@ can require conservative approval.
 
 ## OpenAPI contract
 
-The repository vendors Ubiquiti Network OpenAPI `10.5.67`, matching the active Network application, with 41 GET and 32 write operations. At startup the connector reads `/v1/info` and first probes the authenticated controller document at `/proxy/network/api-docs/integration.json`, followed by older integration-relative contract locations. Controller contract responses are capped at 2 MiB. It uses a controller contract only when its version matches the live Network application; otherwise it remains restricted to the reviewed embedded contract. Capabilities, read-response metadata, snapshots, and `doctor` report the machine-readable contract status.
+The repository vendors Ubiquiti Network OpenAPI `10.5.67`, matching the active Network application, with 41 GET and 32 write operations. At startup the connector reads `/v1/info` and first probes the authenticated controller document at `/proxy/network/api-docs/integration.json`, followed by older integration-relative contract locations. Controller contract responses are capped at 2 MiB. A controller document is used only when its version matches the live Network application, and then only to supplement response-schema capability detection for the same reviewed operation ID, method, and path. Operation IDs, methods, paths, parameters, and request schemas always come from the reviewed embedded contract. Request objects reject undeclared properties by default, and explicit JSON null values are validated against nullable schema semantics. Capabilities, read-response metadata, snapshots, and `doctor` report the machine-readable contract status.
 
 The `10.5.67` review found the same 73 method/path operations and 379 component schemas as `10.4.57`. Its semantic schema changes correct recursive filter-expression references and add the `SHELLY` classification; it does not add official client history or traffic counters, client groups, System Logs, device/client notes, switch-port VLAN/profile/watt telemetry, custom switch-port labels, STP details, or the RF/DHCP fields used by Wi-Fi diagnostics. Those adapters therefore remain private, opt-in, projected, and provenance-labelled. The connector detects adopted-device label and STP capabilities from response-schema paths instead of hard-coding a version. Missing fields are reported with `source`, `scope`, `resolutionStatus`, `resolvedBy`, and `stillMissing` metadata. Successful legacy enrichment resolves labels and the projected STP-related fields separately under `_connector.legacyReadEnrichment`; the normalized UniFi UI Edge/Participant role remains explicitly unresolved.
 
@@ -540,7 +543,7 @@ A worktree build path disappears when that worktree is removed. Before cleaning 
 ./scripts/publish-local.sh
 ```
 
-The script restores locked dependencies, runs the complete Release test suite, publishes into a new versioned directory under `~/source/personal/mcp-connectors/unifi-mcp/releases/`, and atomically switches the `current` symlink only after all prior steps succeed. It never copies `.env` or resolved secrets. Existing releases remain available for manual rollback; the script does not prune them.
+The script restores locked dependencies, runs the complete Release test suite, publishes into a new versioned directory under `~/source/personal/mcp-connectors/unifi-mcp/releases/`, and atomically switches the `current` symlink only after all prior steps succeed. Symlink activation supports BSD/macOS and GNU `mv` semantics. It never copies `.env` or resolved secrets. Existing releases remain available for manual rollback; the script does not prune them.
 
 An alternate absolute destination may be supplied as the first argument. The default durable entrypoint is:
 

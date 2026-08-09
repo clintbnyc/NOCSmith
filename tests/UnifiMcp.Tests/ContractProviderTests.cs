@@ -45,6 +45,126 @@ public sealed class ContractProviderTests
     }
 
     [Fact]
+    public async Task Matching_controller_contract_cannot_expand_reviewed_operations()
+    {
+        var embedded = OpenApiContract.LoadEmbedded();
+        var reviewedWrite = embedded.GetOperation("createVouchers", requireRead: false);
+        var controllerContract = CreateContract("10.5.67");
+        controllerContract["paths"]!["/v1/controller-only"] = new JsonObject
+        {
+            ["post"] = new JsonObject
+            {
+                ["operationId"] = "controllerOnlyWrite",
+                ["requestBody"] = new JsonObject
+                {
+                    ["content"] = new JsonObject
+                    {
+                        ["application/json"] = new JsonObject
+                        {
+                            ["schema"] = new JsonObject { ["type"] = "object" }
+                        }
+                    }
+                },
+                ["responses"] = new JsonObject()
+            }
+        };
+        controllerContract["paths"]![reviewedWrite.PathTemplate] = new JsonObject
+        {
+            [reviewedWrite.Method.Method.ToLowerInvariant()] = new JsonObject
+            {
+                ["operationId"] = reviewedWrite.OperationId,
+                ["requestBody"] = new JsonObject
+                {
+                    ["content"] = new JsonObject
+                    {
+                        ["application/json"] = new JsonObject
+                        {
+                            ["schema"] = new JsonObject
+                            {
+                                ["type"] = "object",
+                                ["additionalProperties"] = true
+                            }
+                        }
+                    }
+                },
+                ["responses"] = new JsonObject()
+            }
+        };
+        var provider = new ContractProvider(
+            embedded,
+            new StubControllerClient("10.5.67", controllerContract),
+            NullLogger<ContractProvider>.Instance);
+
+        await provider.RefreshAsync(CancellationToken.None);
+
+        Assert.Throws<ContractException>(() =>
+            provider.Current.GetOperation("controllerOnlyWrite", requireRead: false));
+        Assert.NotNull(provider.Current.GetOperation("createNetwork", requireRead: false));
+        Assert.Equal(73, provider.Current.Operations.Count);
+        var currentWrite = provider.Current.GetOperation("createVouchers", requireRead: false);
+        Assert.Throws<ContractException>(() => provider.Current.ValidateAndBuild(
+            currentWrite,
+            new Dictionary<string, string>
+            {
+                ["siteId"] = "00000000-0000-0000-0000-000000000001"
+            },
+            null,
+            new JsonObject
+            {
+                ["name"] = "test",
+                ["timeLimitMinutes"] = 1,
+                ["count"] = 1,
+                ["controllerOnlyField"] = true
+            }));
+    }
+
+    [Fact]
+    public async Task Matching_controller_contract_can_supply_response_compatibility_for_reviewed_operation()
+    {
+        var controllerContract = CreateContract("10.5.67");
+        controllerContract["components"] = new JsonObject
+        {
+            ["schemas"] = new JsonObject
+            {
+                ["ControllerInfo"] = new JsonObject
+                {
+                    ["type"] = "object",
+                    ["properties"] = new JsonObject
+                    {
+                        ["controllerOnlyResponseField"] = new JsonObject { ["type"] = "string" }
+                    }
+                }
+            }
+        };
+        controllerContract["paths"]!["/v1/info"]!["get"]!["responses"] = new JsonObject
+        {
+            ["200"] = new JsonObject
+            {
+                ["content"] = new JsonObject
+                {
+                    ["application/json"] = new JsonObject
+                    {
+                        ["schema"] = new JsonObject
+                        {
+                            ["$ref"] = "#/components/schemas/ControllerInfo"
+                        }
+                    }
+                }
+            }
+        };
+        var provider = new ContractProvider(
+            OpenApiContract.LoadEmbedded(),
+            new StubControllerClient("10.5.67", controllerContract),
+            NullLogger<ContractProvider>.Instance);
+
+        await provider.RefreshAsync(CancellationToken.None);
+
+        Assert.True(provider.Current.ResponseSchemaContainsPath(
+            "getInfo",
+            "controllerOnlyResponseField"));
+    }
+
+    [Fact]
     public async Task Mismatched_authenticated_api_docs_contract_falls_back_to_reviewed_embedded_contract()
     {
         var provider = new ContractProvider(

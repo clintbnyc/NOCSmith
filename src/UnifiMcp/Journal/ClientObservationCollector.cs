@@ -328,6 +328,11 @@ public sealed partial class ClientObservationCollector
                     }));
             }
 
+            PrivateReadResponseParser.ValidateCompleteSinglePage(
+                response,
+                sourceRecords.Count,
+                "Private client-history");
+
             return Complete(
                 ClientObservationSource.UiHistory,
                 records,

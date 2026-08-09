@@ -208,6 +208,60 @@ public sealed class ClientObservationCollectorTests
     }
 
     [Fact]
+    public async Task Truncated_history_wrapper_preserves_positive_evidence_without_claiming_completeness()
+    {
+        var client = new ObservationClient
+        {
+            History = new JsonObject
+            {
+                ["offset"] = 0,
+                ["limit"] = 1,
+                ["count"] = 1,
+                ["totalCount"] = 2,
+                ["hasMore"] = true,
+                ["data"] = new JsonArray(new JsonObject
+                {
+                    ["mac"] = "aa:bb:cc:dd:ee:01",
+                    ["last_seen"] = Now.AddMinutes(-5).ToUnixTimeSeconds()
+                })
+            }
+        };
+
+        var result = await CreateCollector(client).CollectAsync(
+            null,
+            24,
+            TestContext.Current.CancellationToken);
+
+        Assert.Equal(CollectionSourceStatus.Partial, result.History.Status);
+        Assert.Single(result.History.Records);
+        Assert.Equal("unrecognizedResponseContract", result.History.ErrorCode);
+        Assert.Equal(CollectionSourceStatus.Partial, result.OverallStatus);
+    }
+
+    [Fact]
+    public async Task Unwrapped_history_array_is_positive_evidence_only()
+    {
+        var client = new ObservationClient
+        {
+            WrapHistoryResponse = false,
+            History = new JsonArray(new JsonObject
+            {
+                ["mac"] = "aa:bb:cc:dd:ee:01",
+                ["last_seen"] = Now.AddMinutes(-5).ToUnixTimeSeconds()
+            })
+        };
+
+        var result = await CreateCollector(client).CollectAsync(
+            null,
+            24,
+            TestContext.Current.CancellationToken);
+
+        Assert.Equal(CollectionSourceStatus.Partial, result.History.Status);
+        Assert.Single(result.History.Records);
+        Assert.NotEqual(CollectionSourceStatus.Complete, result.OverallStatus);
+    }
+
+    [Fact]
     public async Task Overall_collection_is_failed_when_no_source_yields_usable_evidence()
     {
         var client = new ObservationClient
@@ -349,6 +403,8 @@ public sealed class ClientObservationCollectorTests
 
         public bool FailConnectedAfterFirstPage { get; init; }
 
+        public bool WrapHistoryResponse { get; init; } = true;
+
         public int TotalSourceReads { get; private set; }
 
         public Task<JsonNode?> ReadAsync(
@@ -409,7 +465,20 @@ public sealed class ClientObservationCollectorTests
             CancellationToken cancellationToken)
         {
             TotalSourceReads++;
-            return Task.FromResult(History?.DeepClone());
+            if (History is not JsonArray history || !WrapHistoryResponse)
+            {
+                return Task.FromResult(History?.DeepClone());
+            }
+
+            return Task.FromResult<JsonNode?>(new JsonObject
+            {
+                ["offset"] = 0,
+                ["limit"] = Math.Max(1, history.Count),
+                ["count"] = history.Count,
+                ["totalCount"] = history.Count,
+                ["hasMore"] = false,
+                ["data"] = history.DeepClone()
+            });
         }
 
         public Task<JsonNode?> ReadNetworkMembersGroupsAsync(

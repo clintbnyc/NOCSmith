@@ -78,8 +78,16 @@ fi
 mv "$staging" "$release_path"
 ln -s "releases/$release_name" "$next_link"
 # BSD/macOS mv follows a destination symlink without -h and would place
-# next_link inside the old release instead of replacing current.
-mv -h -f "$next_link" "$current_link"
+# next_link inside the old release instead of replacing current. GNU mv uses
+# -T for the equivalent no-target-directory behavior and does not support -h.
+if ! mv -h -f "$next_link" "$current_link" 2>/dev/null; then
+    if [ ! -L "$next_link" ]; then
+        printf 'Symlink activation failed before the GNU mv fallback could run.\n' >&2
+        exit 1
+    fi
+
+    mv -T -f "$next_link" "$current_link"
+fi
 
 trap - EXIT HUP INT TERM
 printf 'Published NOCsmith to %s\n' "$release_path"

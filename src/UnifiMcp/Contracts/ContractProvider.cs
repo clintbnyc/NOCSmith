@@ -87,7 +87,7 @@ public sealed class ContractProvider
                         continue;
                     }
 
-                    Current = contract;
+                    Current = contract.RestrictOperationsTo(embedded);
                     LastProbeWarning = null;
                     _logger.LogInformation(
                         "Loaded UniFi Network {Version} contract from {Path}.",

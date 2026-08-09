@@ -20,8 +20,9 @@ NOCsmith, whose stable technical runtime identifier is `unifi-mcp`, is a private
 .NET 10 Model Context Protocol connector for a UniFi Network controller and,
 optionally, the UniFi Site Manager stable-v1 API. It turns MCP tool calls into:
 
-- reads and writes defined by a reviewed or controller-supplied UniFi Network
-  OpenAPI contract;
+- reads and writes defined by the reviewed embedded UniFi Network OpenAPI
+  operation and request schemas, with version-matched controller response
+  schemas used only for compatible capability detection;
 - narrowly fixed, opt-in private UniFi reads for data absent from the official
   contract;
 - fixed read-only Site Manager inventory and ISP-metric requests; and
@@ -53,8 +54,8 @@ deployment.
 - Confidential network and household metadata returned by reads, including
   MAC/IP addresses, names, topology, events, and ISP metrics.
 - The cleartext SQLite client journal, its integrity, and its availability.
-- The correctness of the embedded/controller OpenAPI allowlist and the
-  preview-to-apply binding for mutations.
+- The correctness of the embedded OpenAPI allowlist, controller
+  response-schema compatibility, and preview-to-apply binding for mutations.
 - The integrity of release artifacts, locked dependencies, container images,
   and deployment configuration.
 
@@ -260,18 +261,21 @@ untrusted. The important invariant is that validation produces a request only
 for a known operation and its declared schema, with escaped parameters and no
 caller-selected origin, raw path, HTTP method, or header.
 
-Existing controls include contract-defined operations, rejection of unknown
-parameters, JSON-schema validation, URI escaping, an HTTPS/suffix-constrained
-local base URL, a fixed Site Manager origin, and fixed private resources. The
+Existing controls include embedded-contract-defined operations, rejection of
+unknown parameters and undeclared request-body properties, explicit-null
+schema validation, URI escaping, an HTTPS/suffix-constrained local base URL, a
+fixed Site Manager origin, and fixed private resources. The
 private System Logs POST has an empty connector-created body and is a read;
 callers cannot choose its method, path, or body.
 
 A controller-served OpenAPI document is a special trust case. It is accepted
-only when parseable and version-matched to the live application, but a
-compromised controller could still publish a malicious same-version contract.
-Reviews should ensure such a contract cannot create arbitrary-origin requests,
-inject headers, bypass preview/apply, or cause unsafe schema complexity. The
-reviewed embedded contract must remain the fail-closed fallback.
+only when parseable and version-matched to the live application, and it may
+supplement response-schema capability detection only for the same reviewed
+operation ID, method, and path. Operation selection, methods, paths,
+parameters, and request validation always use the reviewed embedded contract,
+so a malicious same-version document cannot expand the request allowlist or
+weaken a write schema. Reviews should preserve that split and continue to
+bound controller-supplied response-schema complexity.
 
 The embedded update workflow may ingest an official contract downloaded from
 the authenticated local documentation because the public developer download
@@ -325,7 +329,12 @@ Existing controls include projection of private response fields, recursive
 secret-name and inline-pattern redaction, bounded history/group/log and Wi-Fi
 diagnostics reads, validated counts and pagination, per-section snapshot
 failure, explicit source/authority metadata, nullable version-drift behavior,
-and separation of current, historical, and group-membership grains. Wi-Fi
+and separation of current, historical, and group-membership grains. Private
+client-history absence classifications require a complete single-page
+envelope with consistent offset, count, limit, total count, `hasMore`, and
+continuation metadata. Unknown or partial history completeness remains
+positive evidence only, cannot make a journal collection complete, and does
+not produce interactive offline or missing-history classifications. Wi-Fi
 diagnostics combine only fixed active-client and device resources, discard
 unknown fields, and distinguish configured radio state, operational radio
 state, and explicitly documented derivations. Association duration is derived
@@ -419,9 +428,11 @@ growth, or provider throttling.
 
 Existing controls include bounded configuration values and page sizes,
 timeouts, limited Site Manager concurrency/queues, a process-wide rate ceiling
-and cooldown, five-minute coalescing/caching for discovery, pending-preview
-limits, journal size/retention caps, collection locks, and structured partial
-results for appropriate read aggregation.
+and cooldown, five-minute coalescing and a 16-entry least-recently-used cache
+for discovery, pending-preview limits, journal size/retention caps, collection
+locks, and structured partial results for appropriate read aggregation. Local
+site-reference resolution accepts at most 2,000 declared sites across 10
+pages and requires stable, progressing count/offset/limit/total-count metadata.
 
 Reads may retry transient failures and `429`; writes are sent exactly once.
 Review retry changes for amplification, retry-after overflow, slot starvation,

@@ -107,6 +107,81 @@ public sealed class SiteManagerReadServiceTests
     }
 
     [Fact]
+    public async Task Discovery_cache_is_bounded_and_evicts_the_least_recently_used_entry()
+    {
+        var client = new FakeSiteManagerClient();
+        var service = CreateService(client);
+
+        for (var index = 0; index < 16; index++)
+        {
+            await service.ReadInventoryAsync(
+                "sites",
+                null,
+                null,
+                $"cursor-{index}",
+                CancellationToken.None);
+        }
+
+        await service.ReadInventoryAsync(
+            "sites",
+            null,
+            null,
+            "cursor-0",
+            CancellationToken.None);
+        await service.ReadInventoryAsync(
+            "sites",
+            null,
+            null,
+            "cursor-overflow",
+            CancellationToken.None);
+        await service.ReadInventoryAsync(
+            "sites",
+            null,
+            null,
+            "cursor-0",
+            CancellationToken.None);
+        await service.ReadInventoryAsync(
+            "sites",
+            null,
+            null,
+            "cursor-1",
+            CancellationToken.None);
+
+        Assert.Equal(18, client.GetPaths.Count);
+        Assert.Equal(16, service.Describe()["cachedEntries"]!.GetValue<int>());
+        Assert.Equal(16, service.Describe()["maximumCacheEntries"]!.GetValue<int>());
+    }
+
+    [Fact]
+    public async Task Discovery_cache_removes_expired_entries_before_storing_a_new_response()
+    {
+        var clock = new MutableTimeProvider(
+            new DateTimeOffset(2026, 7, 25, 12, 0, 0, TimeSpan.Zero));
+        var client = new FakeSiteManagerClient();
+        var service = CreateService(client, clock);
+
+        for (var index = 0; index < 16; index++)
+        {
+            await service.ReadInventoryAsync(
+                "sites",
+                null,
+                null,
+                $"expired-{index}",
+                CancellationToken.None);
+        }
+
+        clock.Advance(TimeSpan.FromMinutes(5).Add(TimeSpan.FromTicks(1)));
+        await service.ReadInventoryAsync(
+            "sites",
+            null,
+            null,
+            "fresh",
+            CancellationToken.None);
+
+        Assert.Equal(1, service.Describe()["cachedEntries"]!.GetValue<int>());
+    }
+
+    [Fact]
     public async Task Concurrent_identical_discovery_requests_are_coalesced()
     {
         var release = new TaskCompletionSource<JsonNode?>(

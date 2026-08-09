@@ -16,14 +16,17 @@ public sealed class SiteManagerReadService
     private const int MaximumPagesForEnrichment = 100;
     private const int MaximumPagesForHostMapping = 100;
     private const int MaximumOpaqueIdLength = 4096;
+    private const int MaximumCacheEntries = 16;
     private static readonly TimeSpan CacheDuration = TimeSpan.FromMinutes(5);
 
     private readonly UnifiConfiguration _configuration;
     private readonly ISiteManagerClient _client;
     private readonly SecretRedactor _redactor;
     private readonly TimeProvider _timeProvider;
-    private readonly ConcurrentDictionary<string, CacheEntry> _cache = new(StringComparer.Ordinal);
+    private readonly object _cacheGate = new();
+    private readonly Dictionary<string, CacheEntry> _cache = new(StringComparer.Ordinal);
     private readonly ConcurrentDictionary<string, Lazy<Task<JsonNode?>>> _inflight = new(StringComparer.Ordinal);
+    private long _cacheAccessSequence;
 
     public SiteManagerReadService(
         UnifiConfiguration configuration,
@@ -295,6 +298,8 @@ public sealed class SiteManagerReadService
             ["verified"] = false
         };
         description["cacheSeconds"] = CacheDuration.TotalSeconds;
+        description["maximumCacheEntries"] = MaximumCacheEntries;
+        description["cachedEntries"] = GetCachedEntryCount();
         description["pageSize"] = DefaultPageSize;
         description["maximumPageSize"] = MaximumPageSize;
         description["supportedInventoryActions"] =
@@ -334,9 +339,9 @@ public sealed class SiteManagerReadService
         CancellationToken cancellationToken)
     {
         var now = _timeProvider.GetUtcNow();
-        if (_cache.TryGetValue(key, out var cached) && cached.ExpiresAt > now)
+        if (TryReadCached(key, now, out var cached))
         {
-            return cached.Value?.DeepClone();
+            return cached;
         }
 
         var lazy = _inflight.GetOrAdd(
@@ -345,9 +350,7 @@ public sealed class SiteManagerReadService
                 async () =>
                 {
                     var value = await factory().ConfigureAwait(false);
-                    _cache[key] = new CacheEntry(
-                        value?.DeepClone(),
-                        _timeProvider.GetUtcNow() + CacheDuration);
+                    StoreCached(key, value);
                     return value;
                 },
                 LazyThreadSafetyMode.ExecutionAndPublication));
@@ -361,6 +364,74 @@ public sealed class SiteManagerReadService
         var value = await task.WaitAsync(cancellationToken).ConfigureAwait(false);
         return value?.DeepClone();
     }
+
+    private bool TryReadCached(
+        string key,
+        DateTimeOffset now,
+        out JsonNode? value)
+    {
+        JsonNode? cachedValue;
+        lock (_cacheGate)
+        {
+            RemoveExpiredCacheEntries(now);
+            if (!_cache.TryGetValue(key, out var cached))
+            {
+                value = null;
+                return false;
+            }
+
+            _cache[key] = cached with { LastAccessSequence = NextCacheAccessSequence() };
+            cachedValue = cached.Value;
+        }
+
+        value = cachedValue?.DeepClone();
+        return true;
+    }
+
+    private void StoreCached(string key, JsonNode? value)
+    {
+        var cachedValue = value?.DeepClone();
+        lock (_cacheGate)
+        {
+            var now = _timeProvider.GetUtcNow();
+            RemoveExpiredCacheEntries(now);
+            if (!_cache.ContainsKey(key) && _cache.Count >= MaximumCacheEntries)
+            {
+                var leastRecentlyUsed = _cache
+                    .OrderBy(entry => entry.Value.LastAccessSequence)
+                    .ThenBy(entry => entry.Key, StringComparer.Ordinal)
+                    .First();
+                _cache.Remove(leastRecentlyUsed.Key);
+            }
+
+            _cache[key] = new CacheEntry(
+                cachedValue,
+                now + CacheDuration,
+                NextCacheAccessSequence());
+        }
+    }
+
+    private int GetCachedEntryCount()
+    {
+        lock (_cacheGate)
+        {
+            RemoveExpiredCacheEntries(_timeProvider.GetUtcNow());
+            return _cache.Count;
+        }
+    }
+
+    private void RemoveExpiredCacheEntries(DateTimeOffset now)
+    {
+        foreach (var key in _cache
+            .Where(entry => entry.Value.ExpiresAt <= now)
+            .Select(entry => entry.Key)
+            .ToArray())
+        {
+            _cache.Remove(key);
+        }
+    }
+
+    private long NextCacheAccessSequence() => ++_cacheAccessSequence;
 
     private ToolResponse CreateInventoryResponse(
         string action,
@@ -852,5 +923,8 @@ public sealed class SiteManagerReadService
         return (data?["metrics"] as JsonArray)?.Count ?? 0;
     }
 
-    private sealed record CacheEntry(JsonNode? Value, DateTimeOffset ExpiresAt);
+    private sealed record CacheEntry(
+        JsonNode? Value,
+        DateTimeOffset ExpiresAt,
+        long LastAccessSequence);
 }
