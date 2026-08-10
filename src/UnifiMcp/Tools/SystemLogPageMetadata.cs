@@ -39,16 +39,16 @@ internal sealed record SystemLogPageMetadata(
             }
         }
 
-        var hasAdditionalPages =
-            pageNumber is > 0 ||
-            totalElementCount is int elements && elements > pageRecordCount ||
-            totalPageCount is > 1;
+        var completenessEstablished =
+            pageNumber is 0 &&
+            totalElementCount == pageRecordCount &&
+            totalPageCount is 0 or 1;
 
         return new SystemLogPageMetadata(
             pageNumber,
             totalElementCount,
             totalPageCount,
-            hasAdditionalPages);
+            HasAdditionalPages: !completenessEstablished);
     }
 
     private static int? ReadOptionalBoundedInteger(JsonObject response, string propertyName)

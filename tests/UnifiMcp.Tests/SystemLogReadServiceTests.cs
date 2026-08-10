@@ -211,10 +211,47 @@ public sealed class SystemLogReadServiceTests
     }
 
     [Fact]
-    public async Task Read_reports_truncation_when_metadata_proves_records_were_not_returned()
+    public async Task Read_reports_truncation_when_metadata_does_not_establish_a_complete_first_page()
     {
         var partialResponses = new JsonObject[]
         {
+            new()
+            {
+                ["data"] = new JsonArray { new JsonObject { ["id"] = "event-1" } }
+            },
+            new()
+            {
+                ["page_number"] = 0,
+                ["data"] = new JsonArray { new JsonObject { ["id"] = "event-1" } }
+            },
+            new()
+            {
+                ["total_element_count"] = 1,
+                ["data"] = new JsonArray { new JsonObject { ["id"] = "event-1" } }
+            },
+            new()
+            {
+                ["total_page_count"] = 1,
+                ["data"] = new JsonArray { new JsonObject { ["id"] = "event-1" } }
+            },
+            new()
+            {
+                ["page_number"] = 0,
+                ["total_element_count"] = 1,
+                ["data"] = new JsonArray { new JsonObject { ["id"] = "event-1" } }
+            },
+            new()
+            {
+                ["page_number"] = 0,
+                ["total_page_count"] = 1,
+                ["data"] = new JsonArray { new JsonObject { ["id"] = "event-1" } }
+            },
+            new()
+            {
+                ["total_element_count"] = 1,
+                ["total_page_count"] = 1,
+                ["data"] = new JsonArray { new JsonObject { ["id"] = "event-1" } }
+            },
             new()
             {
                 ["page_number"] = 0,
@@ -253,7 +290,7 @@ public sealed class SystemLogReadServiceTests
     }
 
     [Fact]
-    public async Task Read_preserves_complete_results_when_available_metadata_agrees()
+    public async Task Read_preserves_complete_results_when_all_metadata_establishes_a_complete_first_page()
     {
         var completeResponses = new JsonObject[]
         {
@@ -267,14 +304,9 @@ public sealed class SystemLogReadServiceTests
             new()
             {
                 ["page_number"] = 0,
-                ["total_element_count"] = 1,
-                ["data"] = new JsonArray { new JsonObject { ["id"] = "event-1" } }
-            },
-            new()
-            {
-                ["total_element_count"] = 1,
+                ["total_element_count"] = 0,
                 ["total_page_count"] = 1,
-                ["data"] = new JsonArray { new JsonObject { ["id"] = "event-1" } }
+                ["data"] = new JsonArray()
             }
         };
 

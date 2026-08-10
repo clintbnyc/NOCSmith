@@ -225,7 +225,8 @@ public sealed partial class ClientTrafficReadService
                 var mac = NormalizeRequiredMac(ReadRequiredText(record, "macAddress"), "official macAddress");
                 if (!seenMacs.Add(mac))
                 {
-                    continue;
+                    throw new ContractException(
+                        "Official connected-client inventory contained duplicate normalized macAddress values.");
                 }
 
                 var idText = ReadOptionalText(record, "id");

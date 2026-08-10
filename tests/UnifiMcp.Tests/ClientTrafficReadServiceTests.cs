@@ -164,6 +164,35 @@ public sealed class ClientTrafficReadServiceTests
             service.ReadAsync(SiteId, null, null, null, CancellationToken.None));
     }
 
+    [Fact]
+    public async Task Rejects_duplicate_official_normalized_macs_across_pages()
+    {
+        var connectedClients = ConnectedRange(200);
+        connectedClients.Add(Connected(
+            "00000000-0000-0000-0000-000000000201",
+            "Duplicate",
+            "02:00:00:00:00:0A"));
+        var client = new TrafficClient { ConnectedClients = connectedClients };
+        var service = CreateService(client, enabled: true);
+
+        var exception = await Assert.ThrowsAsync<ContractException>(() =>
+            service.ReadAsync(SiteId, null, null, null, CancellationToken.None));
+
+        Assert.Contains("duplicate normalized macAddress", exception.Message, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public async Task Accepts_unique_official_clients_across_pages()
+    {
+        var client = new TrafficClient { ConnectedClients = ConnectedRange(201) };
+        var service = CreateService(client, enabled: true);
+
+        var response = await service.ReadAsync(SiteId, null, 200, null, CancellationToken.None);
+
+        Assert.Equal(201, response.Data!["_connector"]!["totalConnectedClients"]!.GetValue<int>());
+        Assert.Equal(200, response.Data["clients"]!.AsArray().Count);
+    }
+
     private static ClientTrafficReadService CreateService(TrafficClient client, bool enabled)
     {
         var configuration = new UnifiConfiguration(
@@ -192,6 +221,20 @@ public sealed class ClientTrafficReadServiceTests
         ["name"] = name,
         ["macAddress"] = mac
     };
+
+    private static JsonArray ConnectedRange(int count)
+    {
+        var clients = new JsonArray();
+        for (var index = 0; index < count; index++)
+        {
+            clients.Add(Connected(
+                $"00000000-0000-0000-0000-{index + 1:D12}",
+                $"Client {index + 1}",
+                $"02:00:00:00:{index / 256:x2}:{index % 256:x2}"));
+        }
+
+        return clients;
+    }
 
     private static JsonObject Traffic(
         string mac,
@@ -249,7 +292,11 @@ public sealed class ClientTrafficReadServiceTests
 
             Assert.Equal("getConnectedClientOverviewPage", request.Operation.OperationId);
             var offset = request.RelativeUri.Contains("offset=200", StringComparison.Ordinal) ? 200 : 0;
-            var page = offset == 0 ? ConnectedClients.DeepClone().AsArray() : new JsonArray();
+            var page = new JsonArray(ConnectedClients
+                .Skip(offset)
+                .Take(200)
+                .Select(record => record?.DeepClone())
+                .ToArray());
             return Task.FromResult<JsonNode?>(new JsonObject
             {
                 ["offset"] = offset,

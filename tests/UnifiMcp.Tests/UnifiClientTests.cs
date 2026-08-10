@@ -1,4 +1,5 @@
 using System.Net;
+using System.Net.Http;
 using System.Text;
 using System.Text.Json.Nodes;
 using Microsoft.Extensions.Logging.Abstractions;
@@ -65,6 +66,7 @@ public sealed class UnifiClientTests
             client.GetFixedAsync("../api-docs/integration.json", CancellationToken.None));
 
         Assert.Contains("2097152-byte safety limit", exception.Message, StringComparison.Ordinal);
+        Assert.Single(handler.Requests);
     }
 
     [Theory]
@@ -93,6 +95,44 @@ public sealed class UnifiClientTests
             : client.ReadPortProfilesAsync("default", CancellationToken.None));
 
         Assert.Contains("16777216-byte safety limit", exception.Message, StringComparison.Ordinal);
+        Assert.Single(handler.Requests);
+    }
+
+    [Fact]
+    public async Task Read_retries_transport_failures_while_buffering_the_response_body()
+    {
+        var attempts = 0;
+        var handler = new RecordingHandler(_ =>
+        {
+            attempts++;
+            return attempts == 1
+                ? new HttpResponseMessage(HttpStatusCode.OK)
+                {
+                    Content = new BodyReadFailureContent()
+                }
+                : JsonResponse(HttpStatusCode.OK, "{\"ok\":true}");
+        });
+        using var client = CreateClient(handler, (_, _) => Task.CompletedTask);
+
+        var response = await client.ReadAsync(Request("getInfo", requireRead: true), CancellationToken.None);
+
+        Assert.True(response!["ok"]!.GetValue<bool>());
+        Assert.Equal(2, handler.Requests.Count);
+    }
+
+    [Fact]
+    public async Task Read_preserves_the_response_charset_when_bounding_the_body()
+    {
+        var handler = new RecordingHandler(_ => new HttpResponseMessage(HttpStatusCode.OK)
+        {
+            Content = new StringContent("{\"name\":\"café\"}", Encoding.Latin1, "application/json")
+        });
+        using var client = CreateClient(handler);
+
+        var response = await client.ReadAsync(Request("getInfo", requireRead: true), CancellationToken.None);
+
+        Assert.Equal("café", response!["name"]!.GetValue<string>());
+        Assert.Single(handler.Requests);
     }
 
     [Fact]
@@ -384,6 +424,18 @@ public sealed class UnifiClientTests
                     ? null
                     : await request.Content.ReadAsStringAsync(cancellationToken).ConfigureAwait(false)));
             return _response(request);
+        }
+    }
+
+    private sealed class BodyReadFailureContent : HttpContent
+    {
+        protected override Task SerializeToStreamAsync(Stream stream, TransportContext? context) =>
+            Task.FromException(new HttpRequestException("simulated response body transport failure"));
+
+        protected override bool TryComputeLength(out long length)
+        {
+            length = 0;
+            return false;
         }
     }
 

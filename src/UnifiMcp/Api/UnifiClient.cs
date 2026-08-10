@@ -222,26 +222,20 @@ public sealed class UnifiClient : IUnifiClient, IDisposable
 
         using (response)
         {
-            if (response.Content is not null && maximumResponseBytes is not null)
+            if (response.Content is { } responseContent && maximumResponseBytes is { } responseByteLimit)
             {
-                if (response.Content.Headers.ContentLength > maximumResponseBytes)
+                if (responseContent.Headers.ContentLength > responseByteLimit)
                 {
-                    throw new ContractException(
-                        $"UniFi response exceeded the {maximumResponseBytes}-byte safety limit.");
+                    throw ResponseSizeLimitExceeded(responseByteLimit);
                 }
 
-                try
-                {
-                    await response.Content
-                        .LoadIntoBufferAsync(maximumResponseBytes.Value, cancellationToken)
-                        .ConfigureAwait(false);
-                }
-                catch (HttpRequestException exception)
-                {
-                    throw new ContractException(
-                        $"UniFi response exceeded the {maximumResponseBytes}-byte safety limit.",
-                        exception);
-                }
+                var bufferedContent = await ReadBoundedContentAsync(
+                        responseContent,
+                        responseByteLimit,
+                        cancellationToken)
+                    .ConfigureAwait(false);
+                response.Content = bufferedContent;
+                responseContent.Dispose();
             }
 
             var content = response.Content is null
@@ -283,6 +277,29 @@ public sealed class UnifiClient : IUnifiClient, IDisposable
             }
         }
     }
+
+    private static async Task<HttpContent> ReadBoundedContentAsync(
+        HttpContent content,
+        int maximumResponseBytes,
+        CancellationToken cancellationToken)
+    {
+        using var buffer = new BoundedMemoryStream(maximumResponseBytes);
+        await content.CopyToAsync(buffer, cancellationToken).ConfigureAwait(false);
+
+        var bufferedContent = new ByteArrayContent(buffer.ToArray());
+        foreach (var header in content.Headers)
+        {
+            if (!header.Key.Equals("Content-Length", StringComparison.OrdinalIgnoreCase))
+            {
+                bufferedContent.Headers.TryAddWithoutValidation(header.Key, header.Value);
+            }
+        }
+
+        return bufferedContent;
+    }
+
+    private static ContractException ResponseSizeLimitExceeded(int maximumResponseBytes) =>
+        new($"UniFi response exceeded the {maximumResponseBytes}-byte safety limit.");
 
     private string ExtractErrorDetail(string content)
     {
@@ -374,6 +391,57 @@ public sealed class UnifiClient : IUnifiClient, IDisposable
         }
 
         return Uri.EscapeDataString(internalSiteReference);
+    }
+
+    private sealed class BoundedMemoryStream : MemoryStream
+    {
+        private readonly int _maximumBytes;
+
+        public BoundedMemoryStream(int maximumBytes)
+            : base(Math.Min(maximumBytes, 81920))
+        {
+            _maximumBytes = maximumBytes;
+        }
+
+        public override void Write(byte[] buffer, int offset, int count)
+        {
+            EnsureCapacity(count);
+            base.Write(buffer, offset, count);
+        }
+
+        public override void Write(ReadOnlySpan<byte> buffer)
+        {
+            EnsureCapacity(buffer.Length);
+            base.Write(buffer);
+        }
+
+        public override Task WriteAsync(
+            byte[] buffer,
+            int offset,
+            int count,
+            CancellationToken cancellationToken)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            Write(buffer, offset, count);
+            return Task.CompletedTask;
+        }
+
+        public override ValueTask WriteAsync(
+            ReadOnlyMemory<byte> buffer,
+            CancellationToken cancellationToken = default)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            Write(buffer.Span);
+            return ValueTask.CompletedTask;
+        }
+
+        private void EnsureCapacity(int bytesToWrite)
+        {
+            if (bytesToWrite > _maximumBytes - Length)
+            {
+                throw ResponseSizeLimitExceeded(_maximumBytes);
+            }
+        }
     }
 
     private sealed class RetryableUnifiException : Exception
