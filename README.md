@@ -114,6 +114,20 @@ dotnet build UnifiMcp.slnx --configuration Release --no-restore
 dotnet test UnifiMcp.slnx --configuration Release --no-restore
 ```
 
+The release workflow publishes stable images to GitHub Container Registry for
+both `linux/amd64` and `linux/arm64`:
+
+```sh
+docker pull ghcr.io/webbman-nyc/unifi-mcp:1.3.0
+```
+
+The package is private by default. Authorized consumers can sign in with a
+classic GitHub personal access token scoped only to `read:packages`; if the
+package is later made public, pulls no longer require authentication. Prefer a
+published `sha256` digest when pinning a deployment. See the
+[operations reference](docs/operations.md#github-container-registry) for tag,
+authentication, visibility, and release details.
+
 Validate configuration, TLS, API access, contract selection, and enabled
 features without printing secrets:
 

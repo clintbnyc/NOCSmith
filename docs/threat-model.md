@@ -446,18 +446,46 @@ unless they prevent recovery or disrupt essential network administration.
 ### Build, contract update, and release
 
 Relevant files: `packages.lock.json`, `global.json`, `Directory.Build.props`,
-`Dockerfile`, `docker-compose.yml`, and `scripts/`.
+`Dockerfile`, `docker-compose.yml`, `.github/workflows/`, and `scripts/`.
 
 The build executes NuGet package code and uses .NET container images. The
 repository pins locked packages, treats warnings as errors, explicitly pins
 the native SQLite bundle, and digest-pins both container stages. The OpenAPI
 update script downloads over HTTPS and validates document shape and the
 expected version before replacement. Publishing scripts can install a local
-release or push an ARM64 image to a private registry.
+release or push an ARM64 image to a private registry. The GitHub release
+workflow is a separate boundary that can publish `linux/amd64` and
+`linux/arm64` images to GHCR. Stable releases publish exact-version,
+full-commit SHA, and `latest` tags; manual runs publish only the full-commit SHA
+tag and do not deploy it.
+
+GitHub release creators, Actions, the run-scoped `GITHUB_TOKEN`, GHCR package
+access, hosted runners, third-party actions, QEMU, and BuildKit are trusted at
+this boundary. The workflow limits its permissions to repository reads and
+package writes, pins actions and helper images by immutable revision, requires
+the stable release version to match the application and its commit to belong to
+the default branch, and runs locked restore, formatting, tests, and diff checks
+before registry login. Repository tag protection remains an operator control.
+The Docker build context excludes Git metadata, local environment files,
+secrets, build outputs, and local data. Images carry a repository source label,
+BuildKit provenance, and an SBOM, and the workflow verifies both intended
+platform manifests after publication.
+
+The package begins private. Its repository linkage, inherited access, Actions
+access, and visibility require operator verification after first publication.
+Making the package public is irreversible and exposes compiled assemblies and
+the embedded contract independently of source-repository visibility; the
+repository does not currently declare a project license. GitHub-native artifact
+attestations are unavailable for this private repository on the current plan,
+so BuildKit registry provenance is used without overstating it as a GitHub
+identity attestation. Deployments should pin the published digest when rollback
+or reproducibility matters rather than relying on the mutable `latest` tag.
 
 Supply-chain review should cover unexpected lockfile changes, package/build
 script execution, digest updates, OpenAPI semantic changes, dirty-source
-publishing, registry identity, and symlink-safe activation of local releases.
+publishing, release-tag ancestry and version matching, workflow permissions and
+action/helper-image pins, registry identity and package visibility, manifest
+platforms and provenance, and symlink-safe activation of local releases.
 Developer tooling does not process MCP attacker input, but compromise here can
 replace the entire runtime and is therefore high impact.
 

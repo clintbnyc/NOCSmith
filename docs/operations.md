@@ -533,6 +533,64 @@ with stable generic UniFi server templates, and preserves existing key order
 before vendoring the document. Supply only a reviewed official contract. Do
 not silently refresh the embedded contract at runtime.
 
+## GitHub Container Registry
+
+The [container publishing workflow](../.github/workflows/publish-container.yml)
+publishes multi-architecture images to
+`ghcr.io/webbman-nyc/unifi-mcp`. It is a publishing boundary only: it does not
+deploy the image, restart a connector, update Compose, or replace the separate
+ARM64 private-registry path in `scripts/publish.sh`.
+
+A published stable GitHub release must use `vMAJOR.MINOR.PATCH` or
+`MAJOR.MINOR.PATCH`, match both declared application versions, and point to a
+commit on the default branch. A successful release publishes the exact version,
+the full source commit as `sha-<40 hexadecimal characters>`, and `latest`.
+Manual workflow dispatches publish only the full-commit `sha-*` tag, so a test
+build cannot move a release tag. Pre-releases are intentionally skipped.
+
+Every run restores locked dependencies, verifies formatting, runs the full
+Release test suite, and checks the Git diff before it signs in to GHCR. The
+workflow then builds `linux/amd64` and `linux/arm64`, publishes BuildKit
+provenance plus an SBOM with the image, and verifies both platform manifests and
+the repository-linking OCI source label by digest. GitHub Actions and the QEMU
+and BuildKit helper images are pinned to immutable revisions. The job receives
+only `contents: read` and `packages: write`; it authenticates with the
+run-scoped `GITHUB_TOKEN`, not a stored registry password.
+
+The first package publication is private. An authorized consumer can create a
+classic GitHub personal access token with only `read:packages` and avoid putting
+it in Compose, source control, image layers, or shell arguments:
+
+```sh
+printf '%s' "${GHCR_TOKEN}" | docker login ghcr.io -u GITHUB_USER --password-stdin
+docker pull ghcr.io/webbman-nyc/unifi-mcp:1.3.0
+unset GHCR_TOKEN
+```
+
+For deployment and rollback, prefer the immutable digest recorded in the
+workflow summary:
+
+```sh
+docker pull ghcr.io/webbman-nyc/unifi-mcp@sha256:<published-digest>
+```
+
+After the first successful publication, verify under the organization's
+**Packages** page that the package is linked to this repository, inherits only
+the intended repository access, and grants this Actions repository write
+access. Protect stable release tags with an appropriate repository ruleset so
+only intended release operators can create or update them. Package visibility
+is an operator decision in **Package settings**.
+Public GHCR images can be pulled anonymously, but changing a package from
+private to public is irreversible and exposes the compiled application and its
+embedded contract even though the source repository remains private. The
+repository currently does not declare a project license, so do not treat public
+image availability as a license grant.
+
+GitHub-native artifact attestations are not enabled because private-repository
+attestations require GitHub Enterprise Cloud. The registry-native BuildKit
+provenance and SBOM remain attached to the image; revisit native attestations if
+the repository becomes public or the organization plan changes.
+
 ## Codex registration
 
 ### Stable local publish
