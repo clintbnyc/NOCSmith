@@ -31,6 +31,7 @@ public static class UnifiTools
         SiteManagerDeviceEnrichmentService siteManagerEnrichment,
         ClientGroupReadService clientGroups,
         WifiDiagnosticsReadService wifiDiagnostics,
+        ClientTrafficReadService clientTraffic,
         ClientHistoryReadService clientHistory,
         ClientJournalService clientJournal,
         SystemLogReadService systemLogs,
@@ -74,6 +75,7 @@ public static class UnifiTools
                 ["siteManagerDeviceEnrichment"] = siteManagerEnrichment.Describe(),
                 ["clientGroups"] = clientGroups.Describe(),
                 ["wifiDiagnostics"] = wifiDiagnostics.Describe(),
+                ["clientTraffic"] = clientTraffic.Describe(),
                 ["clientHistory"] = clientHistory.Describe(),
                 ["clientJournal"] = clientJournal.Describe(),
                 ["systemLogs"] = systemLogs.Describe(),
@@ -220,6 +222,23 @@ public static class UnifiTools
             clientLimit,
             radioLimit,
             cancellationToken));
+
+    [McpServerTool(
+        Name = "unifi_client_traffic",
+        Title = "Read current client traffic usage",
+        ReadOnly = true,
+        Destructive = false,
+        OpenWorld = false,
+        UseStructuredContent = true)]
+    [Description("Read and rank bounded current connected-client traffic counters from one fixed private resource joined to the complete bounded official connected-client inventory. Controller rx/tx counters retain source-relative received/transmitted names; unverified rate and upload/download semantics remain unavailable.")]
+    public static Task<ToolResponse> ClientTraffic(
+        ClientTrafficReadService traffic,
+        [Description("Optional site UUID. Omit when exactly one site is available or UNIFI_DEFAULT_SITE_ID is set.")] string? siteId = null,
+        [Description("receivedBytes, transmittedBytes, or combinedBytes. Defaults to combinedBytes.")] string? sortBy = null,
+        [Description("Maximum clients to return, from 1 to 200. Defaults to 25.")] int? limit = null,
+        [Description("Optional colon-delimited client MAC filter.")] string? clientMacAddress = null,
+        CancellationToken cancellationToken = default) =>
+        Guard(() => traffic.ReadAsync(siteId, sortBy, limit, clientMacAddress, cancellationToken));
 
     [McpServerTool(
         Name = "unifi_collect_client_observations",

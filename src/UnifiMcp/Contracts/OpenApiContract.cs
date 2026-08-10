@@ -8,21 +8,46 @@ namespace UnifiMcp.Contracts;
 
 public sealed partial class OpenApiContract
 {
+    private const int MaxControllerResponseSchemaNodes = 4096;
+    private const int MaxResponseSchemaTraversalStates = 16384;
+
     private static readonly HashSet<string> SupportedMethods = new(StringComparer.OrdinalIgnoreCase)
     {
         "get", "post", "put", "patch", "delete"
     };
 
-    private readonly JsonObject _document;
+    private static readonly HashSet<string> AnnotationOnlySchemaKeywords = new(StringComparer.Ordinal)
+    {
+        "$comment",
+        "default",
+        "deprecated",
+        "description",
+        "example",
+        "examples",
+        "externalDocs",
+        "readOnly",
+        "title",
+        "writeOnly",
+        "xml"
+    };
+
+    private readonly JsonObject _requestDocument;
+    private readonly JsonObject _responseDocument;
     private readonly IReadOnlyDictionary<string, OperationDefinition> _operations;
 
     private OpenApiContract(JsonObject document, string source)
+        : this(document, document, source)
     {
-        _document = document;
+    }
+
+    private OpenApiContract(JsonObject requestDocument, JsonObject responseDocument, string source)
+    {
+        _requestDocument = requestDocument;
+        _responseDocument = responseDocument;
         Source = source;
-        Version = document["info"]?["version"]?.GetValue<string>()
+        Version = responseDocument["info"]?["version"]?.GetValue<string>()
             ?? throw new ContractException("OpenAPI contract is missing info.version.");
-        _operations = ParseOperations(document);
+        _operations = ParseOperations(requestDocument);
     }
 
     public string Version { get; }
@@ -44,10 +69,30 @@ public sealed partial class OpenApiContract
 
         var operation = GetOperation(operationId, requireRead: true);
         var methodName = operation.Method.Method.ToLowerInvariant();
-        var schema = _document["paths"]?[operation.PathTemplate]?[methodName]?["responses"]?["200"]?
-            ["content"]?["application/json"]?["schema"] as JsonObject;
-        return schema is not null &&
-            SchemaContainsPath(schema, propertyPath, 0, new HashSet<string>(StringComparer.Ordinal));
+        var controllerSchema = GetResponseSchema(_responseDocument, operation, methodName);
+        if (controllerSchema is not null)
+        {
+            return SchemaContainsPath(
+                controllerSchema,
+                _responseDocument,
+                propertyPath,
+                0);
+        }
+
+        var reviewedSchema = GetResponseSchema(_requestDocument, operation, methodName);
+        return reviewedSchema is not null &&
+            SchemaContainsPath(
+                reviewedSchema,
+                _requestDocument,
+                propertyPath,
+                0);
+    }
+
+    internal OpenApiContract RestrictOperationsTo(OpenApiContract reviewedContract)
+    {
+        var restricted = new OpenApiContract(reviewedContract._requestDocument, _responseDocument, Source);
+        restricted.ValidateControllerResponseSchemas();
+        return restricted;
     }
 
     public static OpenApiContract LoadEmbedded()
@@ -365,18 +410,20 @@ public sealed partial class OpenApiContract
         return result;
     }
 
-    private void ValidateSchema(JsonNode node, JsonObject schemaNode, string path) =>
+    private void ValidateSchema(JsonNode? node, JsonObject schemaNode, string path) =>
         ValidateSchema(
             node,
             schemaNode,
             path,
-            new HashSet<string>(StringComparer.Ordinal));
+            new HashSet<string>(StringComparer.Ordinal),
+            enforceDeclaredProperties: true);
 
     private void ValidateSchema(
-        JsonNode node,
+        JsonNode? node,
         JsonObject schemaNode,
         string path,
-        HashSet<string> visitedReferences)
+        HashSet<string> visitedReferences,
+        bool enforceDeclaredProperties)
     {
         var reference = schemaNode["$ref"]?.GetValue<string>();
         if (reference is not null && !visitedReferences.Add(reference))
@@ -386,6 +433,26 @@ public sealed partial class OpenApiContract
 
         var schema = Resolve(schemaNode);
 
+        if (IsUnconstrainedSchema(schema))
+        {
+            return;
+        }
+
+        if (node is null)
+        {
+            if (SchemaAllowsNull(schemaNode, new HashSet<string>(StringComparer.Ordinal)))
+            {
+                return;
+            }
+
+            throw new ContractException($"{path} may not be null.");
+        }
+
+        if (node is JsonObject declaredObject && enforceDeclaredProperties)
+        {
+            ValidateDeclaredObjectProperties(declaredObject, schema, path);
+        }
+
         if (schema["allOf"] is JsonArray allOf)
         {
             foreach (var part in allOf.OfType<JsonObject>())
@@ -394,7 +461,8 @@ public sealed partial class OpenApiContract
                     node,
                     part,
                     path,
-                    new HashSet<string>(visitedReferences, StringComparer.Ordinal));
+                    new HashSet<string>(visitedReferences, StringComparer.Ordinal),
+                    enforceDeclaredProperties: false);
             }
         }
 
@@ -407,7 +475,8 @@ public sealed partial class OpenApiContract
                     node,
                     discriminatorSchema,
                     path,
-                    new HashSet<string>(visitedReferences, StringComparer.Ordinal));
+                    new HashSet<string>(visitedReferences, StringComparer.Ordinal),
+                    enforceDeclaredProperties: false);
             }
         }
 
@@ -419,16 +488,6 @@ public sealed partial class OpenApiContract
         if (schema["anyOf"] is JsonArray anyOf && !anyOf.OfType<JsonObject>().Any(candidate => IsValid(node, candidate, path)))
         {
             throw new ContractException($"{path} does not match any allowed anyOf schema.");
-        }
-
-        if (node is null)
-        {
-            if (schema["nullable"]?.GetValue<bool>() == true || AllowsNull(schema))
-            {
-                return;
-            }
-
-            throw new ContractException($"{path} may not be null.");
         }
 
         var type = GetTypeName(schema);
@@ -452,14 +511,13 @@ public sealed partial class OpenApiContract
                 {
                     for (var index = 0; index < array.Count; index++)
                     {
-                        if (array[index] is not null)
-                        {
-                            ValidateSchema(array[index]!, itemSchema, $"{path}[{index}]");
-                        }
+                        ValidateSchema(array[index], itemSchema, $"{path}[{index}]");
                     }
                 }
 
                 break;
+            case "null":
+                throw new ContractException($"{path} must be null.");
             default:
                 ValidateScalar(node, schema, path);
                 break;
@@ -543,25 +601,112 @@ public sealed partial class OpenApiContract
             }
         }
 
-        if (schema["properties"] is not JsonObject properties)
-        {
-            return;
-        }
-
+        var properties = schema["properties"] as JsonObject;
         foreach (var property in obj)
         {
-            if (properties[property.Key] is JsonObject propertySchema)
+            if (properties?[property.Key] is JsonObject propertySchema)
             {
-                if (property.Value is not null)
-                {
-                    ValidateSchema(property.Value, propertySchema, $"{path}.{property.Key}");
-                }
-            }
-            else if (schema["additionalProperties"]?.GetValue<bool>() == false)
-            {
-                throw new ContractException($"{path}.{property.Key} is not allowed by the contract.");
+                ValidateSchema(property.Value, propertySchema, $"{path}.{property.Key}");
             }
         }
+    }
+
+    private void ValidateDeclaredObjectProperties(JsonObject obj, JsonObject schema, string path)
+    {
+        var propertyPolicy = GetObjectPropertyPolicy(
+            schema,
+            obj,
+            path,
+            new HashSet<string>(StringComparer.Ordinal));
+        foreach (var property in obj)
+        {
+            if (!propertyPolicy.DeclaredProperties.Contains(property.Key))
+            {
+                if (propertyPolicy.AdditionalPropertySchema is not null)
+                {
+                    ValidateSchema(
+                        property.Value,
+                        propertyPolicy.AdditionalPropertySchema,
+                        $"{path}.{property.Key}");
+                }
+                else if (!propertyPolicy.AllowsAdditionalProperties)
+                {
+                    throw new ContractException($"{path}.{property.Key} is not allowed by the contract.");
+                }
+            }
+        }
+    }
+
+    private ObjectPropertyPolicy GetObjectPropertyPolicy(
+        JsonObject schemaNode,
+        JsonObject source,
+        string path,
+        HashSet<string> visitedReferences)
+    {
+        var reference = schemaNode["$ref"]?.GetValue<string>();
+        if (reference is not null && !visitedReferences.Add(reference))
+        {
+            return new ObjectPropertyPolicy();
+        }
+
+        var schema = Resolve(schemaNode);
+        var policy = new ObjectPropertyPolicy();
+        if (schema["properties"] is JsonObject properties)
+        {
+            policy.DeclaredProperties.UnionWith(properties.Select(property => property.Key));
+        }
+
+        if (schema["additionalProperties"] is JsonValue additionalValue &&
+            additionalValue.TryGetValue<bool>(out var allowsAdditional) &&
+            allowsAdditional)
+        {
+            policy.AllowsAdditionalProperties = true;
+        }
+        else if (schema["additionalProperties"] is JsonObject additionalSchema)
+        {
+            policy.AdditionalPropertySchema = additionalSchema;
+        }
+
+        if (schema["allOf"] is JsonArray allOf)
+        {
+            foreach (var part in allOf.OfType<JsonObject>())
+            {
+                policy.Merge(GetObjectPropertyPolicy(
+                    part,
+                    source,
+                    path,
+                    new HashSet<string>(visitedReferences, StringComparer.Ordinal)));
+            }
+        }
+
+        foreach (var compositionName in new[] { "oneOf", "anyOf" })
+        {
+            if (schema[compositionName] is not JsonArray composition)
+            {
+                continue;
+            }
+
+            foreach (var candidate in composition.OfType<JsonObject>())
+            {
+                policy.Merge(GetObjectPropertyPolicy(
+                    candidate,
+                    source,
+                    path,
+                    new HashSet<string>(visitedReferences, StringComparer.Ordinal)));
+            }
+        }
+
+        var discriminatorSchema = ResolveDiscriminatorSchema(schema, source, path);
+        if (discriminatorSchema is not null)
+        {
+            policy.Merge(GetObjectPropertyPolicy(
+                discriminatorSchema,
+                source,
+                path,
+                new HashSet<string>(visitedReferences, StringComparer.Ordinal)));
+        }
+
+        return policy;
     }
 
     private void ValidateScalar(JsonNode? node, JsonObject schemaNode, string path)
@@ -697,12 +842,20 @@ public sealed partial class OpenApiContract
         return false;
     }
 
-    private JsonObject Resolve(JsonObject schema)
+    private JsonObject Resolve(JsonObject schema) => Resolve(schema, _requestDocument);
+
+    private static JsonObject Resolve(JsonObject schema, JsonObject document)
     {
-        var reference = schema["$ref"]?.GetValue<string>();
-        if (reference is null)
+        if (!schema.ContainsKey("$ref"))
         {
             return schema;
+        }
+
+        if (schema["$ref"] is not JsonValue referenceValue ||
+            !referenceValue.TryGetValue<string>(out var reference) ||
+            string.IsNullOrWhiteSpace(reference))
+        {
+            throw new ContractException("Schema reference must be a non-empty string.");
         }
 
         if (!reference.StartsWith("#/", StringComparison.Ordinal))
@@ -710,7 +863,7 @@ public sealed partial class OpenApiContract
             throw new ContractException($"External schema reference '{reference}' is not allowed.");
         }
 
-        JsonNode? current = _document;
+        JsonNode? current = document;
         foreach (var segment in reference[2..].Split('/'))
         {
             current = current?[segment.Replace("~1", "/", StringComparison.Ordinal).Replace("~0", "~", StringComparison.Ordinal)];
@@ -719,58 +872,156 @@ public sealed partial class OpenApiContract
         return current as JsonObject ?? throw new ContractException($"Schema reference '{reference}' was not found.");
     }
 
-    private bool SchemaContainsPath(
+    private static bool SchemaContainsPath(
         JsonObject schemaNode,
+        JsonObject schemaDocument,
         IReadOnlyList<string> propertyPath,
-        int pathIndex,
-        HashSet<string> visitedReferences)
+        int pathIndex)
     {
-        var reference = schemaNode["$ref"]?.GetValue<string>();
-        if (reference is not null && !visitedReferences.Add(reference))
-        {
-            return false;
-        }
+        var pending = new Queue<(JsonObject Schema, int PathIndex)>();
+        var visited = new Dictionary<JsonObject, HashSet<int>>(ReferenceEqualityComparer.Instance);
+        pending.Enqueue((schemaNode, pathIndex));
+        var traversalStates = 0;
 
-        var schema = Resolve(schemaNode);
-        foreach (var compositionName in new[] { "allOf", "oneOf", "anyOf" })
+        while (pending.TryDequeue(out var current))
         {
-            if (schema[compositionName] is JsonArray composition &&
-                composition.OfType<JsonObject>().Any(candidate =>
-                    SchemaContainsPath(
-                        candidate,
-                        propertyPath,
-                        pathIndex,
-                        new HashSet<string>(visitedReferences, StringComparer.Ordinal))))
+            if (!visited.TryGetValue(current.Schema, out var visitedIndexes))
+            {
+                visitedIndexes = new HashSet<int>();
+                visited.Add(current.Schema, visitedIndexes);
+            }
+
+            if (!visitedIndexes.Add(current.PathIndex))
+            {
+                continue;
+            }
+
+            traversalStates++;
+            if (traversalStates > MaxResponseSchemaTraversalStates)
+            {
+                throw new ContractException(
+                    $"Response schema traversal exceeded the {MaxResponseSchemaTraversalStates} state limit.");
+            }
+
+            if (current.Schema.ContainsKey("$ref"))
+            {
+                pending.Enqueue((Resolve(current.Schema, schemaDocument), current.PathIndex));
+                continue;
+            }
+
+            foreach (var compositionName in new[] { "allOf", "oneOf", "anyOf" })
+            {
+                if (current.Schema[compositionName] is not JsonArray composition)
+                {
+                    continue;
+                }
+
+                foreach (var candidate in composition.OfType<JsonObject>())
+                {
+                    pending.Enqueue((candidate, current.PathIndex));
+                }
+            }
+
+            if (current.Schema["properties"] is not JsonObject properties ||
+                properties[propertyPath[current.PathIndex]] is not JsonObject propertySchema)
+            {
+                continue;
+            }
+
+            if (current.PathIndex == propertyPath.Count - 1)
             {
                 return true;
             }
+
+            var nextSchema = Resolve(propertySchema, schemaDocument);
+            if (nextSchema["items"] is JsonObject items)
+            {
+                nextSchema = Resolve(items, schemaDocument);
+            }
+
+            pending.Enqueue((nextSchema, current.PathIndex + 1));
         }
 
-        if (schema["properties"] is not JsonObject properties ||
-            properties[propertyPath[pathIndex]] is not JsonObject propertySchema)
-        {
-            return false;
-        }
-
-        if (pathIndex == propertyPath.Count - 1)
-        {
-            return true;
-        }
-
-        var resolvedProperty = Resolve(propertySchema);
-        if (resolvedProperty["items"] is JsonObject items)
-        {
-            resolvedProperty = Resolve(items);
-        }
-
-        return SchemaContainsPath(
-            resolvedProperty,
-            propertyPath,
-            pathIndex + 1,
-            visitedReferences);
+        return false;
     }
 
-    private bool IsValid(JsonNode node, JsonObject schema, string path)
+    private void ValidateControllerResponseSchemas()
+    {
+        var pending = new Queue<JsonObject>();
+        foreach (var operation in _operations.Values.Where(operation => operation.IsRead))
+        {
+            var schema = GetResponseSchema(
+                _responseDocument,
+                operation,
+                operation.Method.Method.ToLowerInvariant());
+            if (schema is not null)
+            {
+                pending.Enqueue(schema);
+            }
+        }
+
+        var visited = new HashSet<JsonObject>(ReferenceEqualityComparer.Instance);
+        while (pending.TryDequeue(out var schema))
+        {
+            if (!visited.Add(schema))
+            {
+                continue;
+            }
+
+            if (visited.Count > MaxControllerResponseSchemaNodes)
+            {
+                throw new ContractException(
+                    $"Controller response schemas exceed the {MaxControllerResponseSchemaNodes} node limit.");
+            }
+
+            if (schema.ContainsKey("$ref"))
+            {
+                pending.Enqueue(Resolve(schema, _responseDocument));
+                continue;
+            }
+
+            EnqueueSchemaChildren(schema, pending);
+        }
+    }
+
+    private static void EnqueueSchemaChildren(JsonObject schema, Queue<JsonObject> pending)
+    {
+        foreach (var compositionName in new[] { "allOf", "oneOf", "anyOf", "prefixItems" })
+        {
+            if (schema[compositionName] is JsonArray composition)
+            {
+                foreach (var candidate in composition.OfType<JsonObject>())
+                {
+                    pending.Enqueue(candidate);
+                }
+            }
+        }
+
+        foreach (var childName in new[]
+        {
+            "additionalProperties", "contains", "else", "if", "items", "not", "propertyNames", "then",
+            "unevaluatedItems", "unevaluatedProperties"
+        })
+        {
+            if (schema[childName] is JsonObject child)
+            {
+                pending.Enqueue(child);
+            }
+        }
+
+        foreach (var childCollectionName in new[] { "dependentSchemas", "patternProperties", "properties" })
+        {
+            if (schema[childCollectionName] is JsonObject children)
+            {
+                foreach (var child in children.Select(item => item.Value).OfType<JsonObject>())
+                {
+                    pending.Enqueue(child);
+                }
+            }
+        }
+    }
+
+    private bool IsValid(JsonNode? node, JsonObject schema, string path)
     {
         try
         {
@@ -822,6 +1073,95 @@ public sealed partial class OpenApiContract
     private static bool AllowsNull(JsonObject schema) =>
         schema["type"] is JsonArray array && array.Any(item => item?.GetValue<string>() == "null");
 
+    private bool SchemaAllowsNull(JsonObject schemaNode, HashSet<string> visitedReferences)
+    {
+        if (schemaNode["nullable"]?.GetValue<bool>() == true ||
+            AllowsNull(schemaNode) ||
+            HasNullType(schemaNode) ||
+            ReviewedDescriptionAllowsNull(schemaNode))
+        {
+            return true;
+        }
+
+        var reference = schemaNode["$ref"]?.GetValue<string>();
+        if (reference is not null && !visitedReferences.Add(reference))
+        {
+            return false;
+        }
+
+        var schema = Resolve(schemaNode);
+        if (schema["nullable"]?.GetValue<bool>() == true ||
+            AllowsNull(schema) ||
+            HasNullType(schema) ||
+            ReviewedDescriptionAllowsNull(schema) ||
+            IsUnconstrainedSchema(schema) ||
+            schema["enum"] is JsonArray enumValues && enumValues.Any(value => value is null))
+        {
+            return true;
+        }
+
+        if (schema["oneOf"] is JsonArray oneOf && oneOf.OfType<JsonObject>().Any(candidate =>
+            SchemaAllowsNull(candidate, new HashSet<string>(visitedReferences, StringComparer.Ordinal))))
+        {
+            return true;
+        }
+
+        if (schema["anyOf"] is JsonArray anyOf && anyOf.OfType<JsonObject>().Any(candidate =>
+            SchemaAllowsNull(candidate, new HashSet<string>(visitedReferences, StringComparer.Ordinal))))
+        {
+            return true;
+        }
+
+        return schema["allOf"] is JsonArray allOf &&
+            allOf.OfType<JsonObject>().Any() &&
+            allOf.OfType<JsonObject>().All(candidate =>
+                SchemaAllowsNull(candidate, new HashSet<string>(visitedReferences, StringComparer.Ordinal)));
+    }
+
+    private static bool HasNullType(JsonObject schema) =>
+        schema["type"] is JsonValue typeValue &&
+        typeValue.TryGetValue<string>(out var type) &&
+        string.Equals(type, "null", StringComparison.Ordinal);
+
+    private static bool ReviewedDescriptionAllowsNull(JsonObject schema)
+    {
+        if (schema["description"] is not JsonValue descriptionValue ||
+            !descriptionValue.TryGetValue<string>(out var description))
+        {
+            return false;
+        }
+
+        // The reviewed UniFi 10.5.67 generator omitted a nullable keyword for a
+        // small set of clearable fields while explicitly documenting this wire behavior.
+        return description.Contains("omitted or null", StringComparison.OrdinalIgnoreCase);
+    }
+
+    private static bool IsUnconstrainedSchema(JsonObject schema) =>
+        schema.Count == 0 || schema.All(property => AnnotationOnlySchemaKeywords.Contains(property.Key));
+
+    private static JsonObject? GetResponseSchema(
+        JsonObject document,
+        OperationDefinition operation,
+        string methodName)
+    {
+        if (document["paths"] is not JsonObject paths ||
+            paths[operation.PathTemplate] is not JsonObject pathItem ||
+            pathItem[methodName] is not JsonObject operationObject)
+        {
+            return null;
+        }
+
+        if (!string.Equals(
+                operationObject["operationId"]?.GetValue<string>(),
+                operation.OperationId,
+                StringComparison.Ordinal))
+        {
+            return null;
+        }
+
+        return operationObject?["responses"]?["200"]?["content"]?["application/json"]?["schema"] as JsonObject;
+    }
+
     private static bool IsIntegerString(JsonValue value) =>
         value.TryGetValue<string>(out var text) && long.TryParse(text, NumberStyles.Integer, CultureInfo.InvariantCulture, out _);
 
@@ -833,6 +1173,22 @@ public sealed partial class OpenApiContract
 
     [GeneratedRegex("^\\{(?<name>[^}]+)\\}$", RegexOptions.CultureInvariant)]
     private static partial Regex PathParameterPattern();
+
+    private sealed class ObjectPropertyPolicy
+    {
+        public HashSet<string> DeclaredProperties { get; } = new(StringComparer.Ordinal);
+
+        public bool AllowsAdditionalProperties { get; set; }
+
+        public JsonObject? AdditionalPropertySchema { get; set; }
+
+        public void Merge(ObjectPropertyPolicy other)
+        {
+            DeclaredProperties.UnionWith(other.DeclaredProperties);
+            AllowsAdditionalProperties |= other.AllowsAdditionalProperties;
+            AdditionalPropertySchema ??= other.AdditionalPropertySchema;
+        }
+    }
 }
 
 public sealed record ValidatedRequest(OperationDefinition Operation, string RelativeUri, JsonNode? Body);

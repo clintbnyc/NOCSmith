@@ -452,6 +452,8 @@ public static class DoctorCommand
                 throw new ContractException("Private UniFi System Logs query did not return a data array.");
             }
 
+            var pageMetadata = SystemLogPageMetadata.Read(systemLogs.AsObject(), data.Count);
+
             return new JsonObject
             {
                 ["enabled"] = true,
@@ -459,9 +461,9 @@ public static class DoctorCommand
                 ["readOnly"] = true,
                 ["queryStylePost"] = true,
                 ["alertRecords"] = data.Count,
-                ["sourcePageNumber"] = systemLogs["page_number"]?.DeepClone(),
-                ["sourceTotalElementCount"] = systemLogs["total_element_count"]?.DeepClone(),
-                ["sourceTotalPageCount"] = systemLogs["total_page_count"]?.DeepClone(),
+                ["sourcePageNumber"] = pageMetadata.PageNumber,
+                ["sourceTotalElementCount"] = pageMetadata.TotalElementCount,
+                ["sourceTotalPageCount"] = pageMetadata.TotalPageCount,
                 ["rawResponsesReturned"] = false
             };
         }

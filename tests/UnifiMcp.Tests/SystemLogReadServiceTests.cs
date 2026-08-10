@@ -134,6 +134,199 @@ public sealed class SystemLogReadServiceTests
     }
 
     [Fact]
+    public async Task Read_rejects_untrusted_pagination_metadata_instead_of_returning_it()
+    {
+        var invalidValues = new JsonNode[]
+        {
+            new JsonObject { ["secret"] = "must-not-escape" },
+            JsonValue.Create(-1),
+            JsonValue.Create(1_000_000_001L)
+        };
+
+        foreach (var invalidValue in invalidValues)
+        {
+            var client = new SystemLogClient
+            {
+                SystemLogs = new JsonObject
+                {
+                    ["page_number"] = invalidValue.DeepClone(),
+                    ["total_element_count"] = 0,
+                    ["total_page_count"] = 0,
+                    ["data"] = new JsonArray()
+                }
+            };
+            var service = CreateService(client, enabled: true);
+
+            var exception = await Assert.ThrowsAsync<ContractException>(() =>
+                service.ReadAsync(null, includeRead: true, requestedLimit: 10, CancellationToken.None));
+
+            Assert.Contains("page_number", exception.Message, StringComparison.Ordinal);
+            Assert.DoesNotContain("must-not-escape", exception.Message, StringComparison.Ordinal);
+        }
+    }
+
+    [Fact]
+    public async Task Read_rejects_inconsistent_pagination_metadata()
+    {
+        var client = new SystemLogClient
+        {
+            SystemLogs = new JsonObject
+            {
+                ["page_number"] = 2,
+                ["total_element_count"] = 1,
+                ["total_page_count"] = 1,
+                ["data"] = new JsonArray { new JsonObject { ["id"] = "event-1" } }
+            }
+        };
+        var service = CreateService(client, enabled: true);
+
+        var exception = await Assert.ThrowsAsync<ContractException>(() =>
+            service.ReadAsync(null, includeRead: true, requestedLimit: 10, CancellationToken.None));
+
+        Assert.Contains("inconsistent", exception.Message, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task Read_reports_a_nonfirst_controller_page_as_truncated()
+    {
+        var client = new SystemLogClient
+        {
+            SystemLogs = new JsonObject
+            {
+                ["page_number"] = 1,
+                ["total_element_count"] = 2,
+                ["total_page_count"] = 2,
+                ["data"] = new JsonArray { new JsonObject { ["id"] = "event-1" } }
+            }
+        };
+        var service = CreateService(client, enabled: true);
+
+        var response = await service.ReadAsync(
+            null,
+            includeRead: true,
+            requestedLimit: 10,
+            CancellationToken.None);
+
+        Assert.True(response.Data!["_connector"]!["truncated"]!.GetValue<bool>());
+    }
+
+    [Fact]
+    public async Task Read_reports_truncation_when_metadata_does_not_establish_a_complete_first_page()
+    {
+        var partialResponses = new JsonObject[]
+        {
+            new()
+            {
+                ["data"] = new JsonArray { new JsonObject { ["id"] = "event-1" } }
+            },
+            new()
+            {
+                ["page_number"] = 0,
+                ["data"] = new JsonArray { new JsonObject { ["id"] = "event-1" } }
+            },
+            new()
+            {
+                ["total_element_count"] = 1,
+                ["data"] = new JsonArray { new JsonObject { ["id"] = "event-1" } }
+            },
+            new()
+            {
+                ["total_page_count"] = 1,
+                ["data"] = new JsonArray { new JsonObject { ["id"] = "event-1" } }
+            },
+            new()
+            {
+                ["page_number"] = 0,
+                ["total_element_count"] = 1,
+                ["data"] = new JsonArray { new JsonObject { ["id"] = "event-1" } }
+            },
+            new()
+            {
+                ["page_number"] = 0,
+                ["total_page_count"] = 1,
+                ["data"] = new JsonArray { new JsonObject { ["id"] = "event-1" } }
+            },
+            new()
+            {
+                ["total_element_count"] = 1,
+                ["total_page_count"] = 1,
+                ["data"] = new JsonArray { new JsonObject { ["id"] = "event-1" } }
+            },
+            new()
+            {
+                ["page_number"] = 0,
+                ["total_element_count"] = 2,
+                ["data"] = new JsonArray { new JsonObject { ["id"] = "event-1" } }
+            },
+            new()
+            {
+                ["page_number"] = 0,
+                ["total_element_count"] = 2,
+                ["total_page_count"] = 1,
+                ["data"] = new JsonArray { new JsonObject { ["id"] = "event-1" } }
+            },
+            new()
+            {
+                ["page_number"] = 1,
+                ["total_element_count"] = 1,
+                ["data"] = new JsonArray { new JsonObject { ["id"] = "event-1" } }
+            }
+        };
+
+        foreach (var partialResponse in partialResponses)
+        {
+            var client = new SystemLogClient { SystemLogs = partialResponse };
+            var service = CreateService(client, enabled: true);
+
+            var response = await service.ReadAsync(
+                null,
+                includeRead: true,
+                requestedLimit: 10,
+                CancellationToken.None);
+
+            Assert.True(response.Data!["_connector"]!["truncated"]!.GetValue<bool>());
+            Assert.Contains("truncated", response.Summary, StringComparison.OrdinalIgnoreCase);
+        }
+    }
+
+    [Fact]
+    public async Task Read_preserves_complete_results_when_all_metadata_establishes_a_complete_first_page()
+    {
+        var completeResponses = new JsonObject[]
+        {
+            new()
+            {
+                ["page_number"] = 0,
+                ["total_element_count"] = 1,
+                ["total_page_count"] = 1,
+                ["data"] = new JsonArray { new JsonObject { ["id"] = "event-1" } }
+            },
+            new()
+            {
+                ["page_number"] = 0,
+                ["total_element_count"] = 0,
+                ["total_page_count"] = 1,
+                ["data"] = new JsonArray()
+            }
+        };
+
+        foreach (var completeResponse in completeResponses)
+        {
+            var client = new SystemLogClient { SystemLogs = completeResponse };
+            var service = CreateService(client, enabled: true);
+
+            var response = await service.ReadAsync(
+                null,
+                includeRead: true,
+                requestedLimit: 10,
+                CancellationToken.None);
+
+            Assert.False(response.Data!["_connector"]!["truncated"]!.GetValue<bool>());
+            Assert.DoesNotContain("truncated", response.Summary, StringComparison.OrdinalIgnoreCase);
+        }
+    }
+
+    [Fact]
     public async Task Read_reports_missing_private_resource_as_not_supported()
     {
         var client = new SystemLogClient

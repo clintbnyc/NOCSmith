@@ -1,0 +1,168 @@
+name: Publish container image
+
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  packages: write
+
+env:
+  IMAGE_NAME: ghcr.io/webbman-nyc/unifi-mcp
+
+jobs:
+  publish:
+    if: github.event_name == 'workflow_dispatch' || github.event.release.prerelease == false
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    concurrency:
+      group: ghcr-publish-${{ github.ref }}
+      cancel-in-progress: false
+
+    steps:
+      - name: Check out the publishing revision
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+
+      - name: Set up .NET
+        uses: actions/setup-dotnet@a98b56852c35b8e3190ac28c8c2271da59106c68 # v6.0.0
+
+      - name: Validate the release boundary
+        if: github.event_name == 'release'
+        shell: bash
+        env:
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+          EVENT_SHA: ${{ github.sha }}
+          RELEASE_TAG: ${{ github.event.release.tag_name }}
+        run: |
+          set -euo pipefail
+
+          if [[ ! "${RELEASE_TAG}" =~ ^v?[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "Release tag must be vMAJOR.MINOR.PATCH or MAJOR.MINOR.PATCH." >&2
+            exit 1
+          fi
+
+          release_version="${RELEASE_TAG#v}"
+          project_version="$(dotnet msbuild src/UnifiMcp/UnifiMcp.csproj --nologo -getProperty:Version)"
+          server_version="$(sed -n 's/^[[:space:]]*Version = "\([^"]*\)",$/\1/p' src/UnifiMcp/ApplicationServices.cs)"
+
+          if [[ -z "${project_version}" || -z "${server_version}" ]]; then
+            echo "Could not read both declared application versions." >&2
+            exit 1
+          fi
+
+          if [[ "${release_version}" != "${project_version}" || "${release_version}" != "${server_version}" ]]; then
+            echo "Release tag ${RELEASE_TAG} does not match the project and MCP server versions." >&2
+            exit 1
+          fi
+
+          release_commit="$(git rev-parse "${RELEASE_TAG}^{commit}")"
+          if [[ "${release_commit}" != "${EVENT_SHA}" ]]; then
+            echo "The release event revision does not match the release tag." >&2
+            exit 1
+          fi
+
+          git fetch --no-tags origin "${DEFAULT_BRANCH}:refs/remotes/origin/${DEFAULT_BRANCH}"
+          if ! git merge-base --is-ancestor "${release_commit}" "refs/remotes/origin/${DEFAULT_BRANCH}"; then
+            echo "Release tags must identify a commit on the default branch." >&2
+            exit 1
+          fi
+
+      - name: Restore locked dependencies
+        run: dotnet restore UnifiMcp.slnx --locked-mode
+
+      - name: Verify formatting
+        run: dotnet format UnifiMcp.slnx --no-restore --verify-no-changes
+
+      - name: Run the Release test suite
+        run: dotnet test UnifiMcp.slnx --configuration Release --no-restore
+
+      - name: Check the source diff
+        run: git diff --check
+
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@96fe6ef7f33517b61c61be40b68a1882f3264fb8 # v4.2.0
+        with:
+          image: tonistiigi/binfmt@sha256:400a4873b838d1b89194d982c45e5fb3cda4593fbfd7e08a02e76b03b21166f0
+          platforms: arm64
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@bb05f3f5519dd87d3ba754cc423b652a5edd6d2c # v4.2.0
+        with:
+          driver-opts: image=moby/buildkit:buildx-stable-1@sha256:2f5adac4ecd194d9f8c10b7b5d7bceb5186853db1b26e5abd3a657af0b7e26ec
+
+      - name: Sign in to GitHub Container Registry
+        uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4.6.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Select image tags and labels
+        id: metadata
+        uses: docker/metadata-action@dc802804100637a589fabce1cb79ff13a1411302 # v6.2.0
+        with:
+          images: ${{ env.IMAGE_NAME }}
+          flavor: latest=false
+          tags: |
+            type=sha,format=long,prefix=sha-
+            type=semver,pattern={{version}},value=${{ github.event.release.tag_name }},enable=${{ github.event_name == 'release' }}
+            type=raw,value=latest,enable=${{ github.event_name == 'release' }}
+          labels: |
+            org.opencontainers.image.source=https://github.com/Webbman-nyc/unifi-mcp
+            org.opencontainers.image.title=NOCsmith by Clint
+            org.opencontainers.image.description=Network intelligence, forged safely.
+
+      - name: Build and publish the image
+        id: publish
+        uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a # v7.3.0
+        with:
+          context: .
+          platforms: linux/amd64,linux/arm64
+          pull: true
+          push: true
+          tags: ${{ steps.metadata.outputs.tags }}
+          labels: ${{ steps.metadata.outputs.labels }}
+          provenance: mode=max
+          sbom: generator=docker/buildkit-syft-scanner@sha256:79e7b013cbec16bbb436f312819a49a4a57752b2270c1a9332ae1a10fcc82a68
+
+      - name: Verify the published manifest
+        shell: bash
+        env:
+          IMAGE_DIGEST: ${{ steps.publish.outputs.digest }}
+          IMAGE_TAGS: ${{ steps.metadata.outputs.tags }}
+        run: |
+          set -euo pipefail
+
+          if [[ ! "${IMAGE_DIGEST}" =~ ^sha256:[0-9a-f]{64}$ ]]; then
+            echo "The image publisher did not return a valid digest." >&2
+            exit 1
+          fi
+
+          image_reference="${IMAGE_NAME}@${IMAGE_DIGEST}"
+          manifest_json="$(docker buildx imagetools inspect "${image_reference}" --format '{{json .Manifest}}')"
+          image_json="$(docker buildx imagetools inspect "${image_reference}" --format '{{json .Image}}')"
+
+          jq -e '
+            any(.manifests[]; .platform.os == "linux" and .platform.architecture == "amd64") and
+            any(.manifests[]; .platform.os == "linux" and .platform.architecture == "arm64")
+          ' <<<"${manifest_json}" >/dev/null
+
+          jq -e '
+            ."linux/amd64".config.Labels."org.opencontainers.image.source" == "https://github.com/Webbman-nyc/unifi-mcp" and
+            ."linux/arm64".config.Labels."org.opencontainers.image.source" == "https://github.com/Webbman-nyc/unifi-mcp"
+          ' <<<"${image_json}" >/dev/null
+
+          {
+            echo "### Published container image"
+            echo
+            echo "Digest: \`${image_reference}\`"
+            echo
+            echo "Tags:"
+            while IFS= read -r tag; do
+              echo "- \`${tag}\`"
+            done <<<"${IMAGE_TAGS}"
+          } >>"${GITHUB_STEP_SUMMARY}"

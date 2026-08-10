@@ -93,7 +93,7 @@ public sealed class LegacyReadEnrichmentServiceTests
         Assert.DoesNotContain("abc123", serialized, StringComparison.Ordinal);
         Assert.DoesNotContain("must-never-escape", serialized, StringComparison.Ordinal);
         Assert.DoesNotContain("sensitive-network-config", serialized, StringComparison.Ordinal);
-        Assert.DoesNotContain("native_networkconf_id", serialized, StringComparison.Ordinal);
+        Assert.DoesNotContain("\"native_networkconf_id\":", serialized, StringComparison.Ordinal);
         Assert.DoesNotContain("psk", serialized, StringComparison.OrdinalIgnoreCase);
     }
 
@@ -228,6 +228,296 @@ public sealed class LegacyReadEnrichmentServiceTests
     }
 
     [Fact]
+    public async Task Device_enrichment_resolves_port_profile_networks_and_poe_without_leaking_private_ids()
+    {
+        const string nativeNetworkId = "00000000-0000-0000-0000-000000000101";
+        const string taggedNetworkId = "00000000-0000-0000-0000-000000000102";
+        const string missingNetworkId = "00000000-0000-0000-0000-000000000199";
+        var client = new LegacyClient
+        {
+            LegacyDevices = new JsonObject
+            {
+                ["data"] = new JsonArray(
+                    new JsonObject
+                    {
+                        ["mac"] = "74:fa:29:42:c1:cb",
+                        ["port_table"] = new JsonArray(
+                            new JsonObject
+                            {
+                                ["port_idx"] = 7,
+                                ["name"] = "Server trunk",
+                                ["portconf_id"] = "private-profile-id",
+                                ["poe_power"] = "12.34",
+                                ["poe_voltage"] = "50.1",
+                                ["private_key"] = "must-not-escape"
+                            }),
+                        ["port_overrides"] = new JsonArray(
+                            new JsonObject
+                            {
+                                ["port_idx"] = 7,
+                                ["setting_preference"] = "manual"
+                            })
+                    })
+            },
+            PortProfiles = new JsonObject
+            {
+                ["data"] = new JsonArray(
+                    new JsonObject
+                    {
+                        ["_id"] = "private-profile-id",
+                        ["name"] = "Servers token=secret",
+                        ["native_networkconf_id"] = nativeNetworkId,
+                        ["tagged_networkconf_ids"] = new JsonArray(taggedNetworkId, missingNetworkId),
+                        ["poe_mode"] = "auto",
+                        ["x_authkey"] = "must-not-escape"
+                    })
+            },
+            Networks = new JsonArray(
+                Network(nativeNetworkId, "Servers", 60),
+                Network(taggedNetworkId, "Management", 7))
+        };
+        var service = CreateService(client, enabled: true);
+        var response = new JsonObject
+        {
+            ["id"] = DeviceId,
+            ["macAddress"] = "74:fa:29:42:c1:cb",
+            ["interfaces"] = new JsonObject
+            {
+                ["ports"] = new JsonArray(
+                    new JsonObject
+                    {
+                        ["idx"] = 7,
+                        ["state"] = "UP",
+                        ["speedMbps"] = 2500,
+                        ["maxSpeedMbps"] = 2500,
+                        ["poe"] = new JsonObject
+                        {
+                            ["enabled"] = true,
+                            ["standard"] = "802.3at",
+                            ["state"] = "UP"
+                        }
+                    })
+            }
+        };
+
+        var result = await service.EnrichAsync(
+            "getAdoptedDeviceDetails",
+            new Dictionary<string, string> { ["siteId"] = SiteId, ["deviceId"] = DeviceId },
+            response,
+            CancellationToken.None);
+
+        var enrichment = result!["_connector"]!["legacyReadEnrichment"]!;
+        var port = Assert.Single(Assert.Single(enrichment["records"]!.AsArray())!["ports"]!.AsArray())!;
+        Assert.Equal("UP", port["officialOverview"]!["state"]!.GetValue<string>());
+        Assert.Equal(2500, port["officialOverview"]!["speedMbps"]!.GetValue<int>());
+        Assert.Equal("802.3at", port["officialOverview"]!["poe"]!["standard"]!.GetValue<string>());
+        Assert.Equal(12.34, port["poePowerWatts"]!.GetValue<double>());
+        Assert.Equal("auto", port["poeMode"]!.GetValue<string>());
+        Assert.Equal("resolved", port["nativeNetwork"]!["status"]!.GetValue<string>());
+        Assert.Equal("Servers", port["nativeNetwork"]!["name"]!.GetValue<string>());
+        Assert.Equal(60, port["nativeNetwork"]!["vlanId"]!.GetValue<int>());
+        var tagged = port["allowedTaggedNetworks"]!.AsArray();
+        Assert.Equal(2, tagged.Count);
+        Assert.Equal("resolved", tagged[0]!["status"]!.GetValue<string>());
+        Assert.Equal("unresolved", tagged[1]!["status"]!.GetValue<string>());
+        Assert.Equal("partial", port["allowedTaggedNetworksStatus"]!.GetValue<string>());
+        Assert.False(port["allowedTaggedNetworksDerived"]!.GetValue<bool>());
+        Assert.Equal("resolved", port["portProfile"]!["status"]!.GetValue<string>());
+        Assert.Contains("token=<redacted>", port["portProfile"]!["name"]!.GetValue<string>(), StringComparison.Ordinal);
+        Assert.Equal("manual", port["configuredState"]!["settingPreference"]!.GetValue<string>());
+        Assert.Equal("per-port-override", port["configuredState"]!["source"]!.GetValue<string>());
+        Assert.False(enrichment["normalizedUiStpRole"]!["available"]!.GetValue<bool>());
+
+        var serialized = enrichment.ToJsonString();
+        Assert.DoesNotContain("private-profile-id", serialized, StringComparison.Ordinal);
+        Assert.DoesNotContain(nativeNetworkId, serialized, StringComparison.Ordinal);
+        Assert.DoesNotContain(taggedNetworkId, serialized, StringComparison.Ordinal);
+        Assert.DoesNotContain(missingNetworkId, serialized, StringComparison.Ordinal);
+        Assert.DoesNotContain("50.1", serialized, StringComparison.Ordinal);
+        Assert.DoesNotContain("must-not-escape", serialized, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task Device_enrichment_derives_custom_tagged_networks_only_from_complete_bounded_inventory()
+    {
+        const string nativeNetworkId = "00000000-0000-0000-0000-000000000101";
+        const string allowedNetworkId = "00000000-0000-0000-0000-000000000102";
+        const string excludedNetworkId = "00000000-0000-0000-0000-000000000103";
+        var client = new LegacyClient
+        {
+            LegacyDevices = new JsonObject
+            {
+                ["data"] = new JsonArray(
+                    new JsonObject
+                    {
+                        ["mac"] = "74:fa:29:42:c1:cb",
+                        ["port_table"] = new JsonArray(
+                            new JsonObject { ["port_idx"] = 1, ["poe_power"] = "unsupported" }),
+                        ["port_overrides"] = new JsonArray(
+                            new JsonObject
+                            {
+                                ["port_idx"] = 1,
+                                ["native_networkconf_id"] = nativeNetworkId,
+                                ["forward"] = "customize",
+                                ["excluded_networkconf_ids"] = new JsonArray(excludedNetworkId)
+                            })
+                    })
+            },
+            Networks = new JsonArray(
+                Network(nativeNetworkId, "Native", 1),
+                Network(allowedNetworkId, "Allowed", 20),
+                Network(excludedNetworkId, "Excluded", 30))
+        };
+        var service = CreateService(client, enabled: true);
+        var response = new JsonObject
+        {
+            ["id"] = DeviceId,
+            ["macAddress"] = "74:fa:29:42:c1:cb",
+            ["interfaces"] = new JsonObject { ["ports"] = new JsonArray() }
+        };
+
+        var result = await service.EnrichAsync(
+            "getAdoptedDeviceDetails",
+            new Dictionary<string, string> { ["siteId"] = SiteId, ["deviceId"] = DeviceId },
+            response,
+            CancellationToken.None);
+
+        var port = Assert.Single(Assert.Single(result!["_connector"]!["legacyReadEnrichment"]!["records"]!.AsArray())!["ports"]!.AsArray())!;
+        var tagged = Assert.Single(port["allowedTaggedNetworks"]!.AsArray())!;
+        Assert.True(port["allowedTaggedNetworksDerived"]!.GetValue<bool>());
+        Assert.Equal("Allowed", tagged["name"]!.GetValue<string>());
+        Assert.Equal(20, tagged["vlanId"]!.GetValue<int>());
+        Assert.Null(port["poePowerWatts"]);
+        Assert.Null(port["poeMode"]);
+        Assert.Equal("unavailable", port["portProfile"]!["status"]!.GetValue<string>());
+    }
+
+    [Fact]
+    public async Task Unsupported_port_profile_source_does_not_remove_existing_device_enrichment()
+    {
+        var client = new LegacyClient
+        {
+            LegacyDevices = new JsonObject
+            {
+                ["data"] = new JsonArray(
+                    new JsonObject
+                    {
+                        ["mac"] = "74:fa:29:42:c1:cb",
+                        ["port_table"] = new JsonArray(
+                            new JsonObject { ["port_idx"] = 1, ["name"] = "Existing label" }),
+                        ["port_overrides"] = new JsonArray(
+                            new JsonObject { ["port_idx"] = 1, ["portconf_id"] = "unavailable-profile" })
+                    })
+            },
+            ProfileFailure = true
+        };
+        var service = CreateService(client, enabled: true);
+        var response = new JsonObject
+        {
+            ["id"] = DeviceId,
+            ["macAddress"] = "74:fa:29:42:c1:cb"
+        };
+
+        var result = await service.EnrichAsync(
+            "getAdoptedDeviceDetails",
+            new Dictionary<string, string> { ["siteId"] = SiteId, ["deviceId"] = DeviceId },
+            response,
+            CancellationToken.None);
+
+        var enrichment = result!["_connector"]!["legacyReadEnrichment"]!;
+        var port = Assert.Single(Assert.Single(enrichment["records"]!.AsArray())!["ports"]!.AsArray())!;
+        Assert.Equal("ok", enrichment["status"]!.GetValue<string>());
+        Assert.Equal("Existing label", port["label"]!.GetValue<string>());
+        Assert.Equal("unavailable", port["portProfile"]!["status"]!.GetValue<string>());
+        Assert.Equal("unavailable", enrichment["portProfileInventory"]!["status"]!.GetValue<string>());
+    }
+
+    [Fact]
+    public async Task Unsupported_network_inventory_preserves_non_network_device_enrichment()
+    {
+        var client = new LegacyClient
+        {
+            LegacyDevices = new JsonObject
+            {
+                ["data"] = new JsonArray(
+                    new JsonObject
+                    {
+                        ["mac"] = "74:fa:29:42:c1:cb",
+                        ["port_table"] = new JsonArray(
+                            new JsonObject { ["port_idx"] = 1, ["name"] = "Existing label", ["poe_power"] = 4.5 }),
+                        ["port_overrides"] = new JsonArray(
+                            new JsonObject
+                            {
+                                ["port_idx"] = 1,
+                                ["native_networkconf_id"] = "private-network-id"
+                            })
+                    })
+            },
+            NetworkFailure = true
+        };
+        var service = CreateService(client, enabled: true);
+        var response = new JsonObject
+        {
+            ["id"] = DeviceId,
+            ["macAddress"] = "74:fa:29:42:c1:cb"
+        };
+
+        var result = await service.EnrichAsync(
+            "getAdoptedDeviceDetails",
+            new Dictionary<string, string> { ["siteId"] = SiteId, ["deviceId"] = DeviceId },
+            response,
+            CancellationToken.None);
+
+        var enrichment = result!["_connector"]!["legacyReadEnrichment"]!;
+        var port = Assert.Single(Assert.Single(enrichment["records"]!.AsArray())!["ports"]!.AsArray())!;
+        Assert.Equal("ok", enrichment["status"]!.GetValue<string>());
+        Assert.Equal("Existing label", port["label"]!.GetValue<string>());
+        Assert.Equal(4.5, port["poePowerWatts"]!.GetValue<double>());
+        Assert.Equal("unavailable", port["nativeNetwork"]!["status"]!.GetValue<string>());
+        Assert.Equal("unavailable", enrichment["networkInventory"]!["status"]!.GetValue<string>());
+    }
+
+    [Fact]
+    public async Task Device_overview_does_not_claim_device_details_port_provenance()
+    {
+        var client = new LegacyClient
+        {
+            LegacyDevices = new JsonObject
+            {
+                ["data"] = new JsonArray(
+                    new JsonObject
+                    {
+                        ["mac"] = "74:fa:29:42:c1:cb",
+                        ["port_table"] = new JsonArray(
+                            new JsonObject { ["port_idx"] = 1, ["name"] = "Overview port" })
+                    })
+            }
+        };
+        var service = CreateService(client, enabled: true);
+        var response = new JsonObject
+        {
+            ["data"] = new JsonArray(
+                new JsonObject
+                {
+                    ["id"] = DeviceId,
+                    ["macAddress"] = "74:fa:29:42:c1:cb",
+                    ["interfaces"] = new JsonArray("PORTS")
+                })
+        };
+
+        var result = await service.EnrichAsync(
+            "getAdoptedDeviceOverviewPage",
+            new Dictionary<string, string> { ["siteId"] = SiteId },
+            response,
+            CancellationToken.None);
+
+        var port = Assert.Single(Assert.Single(result!["_connector"]!["legacyReadEnrichment"]!["records"]!.AsArray())!["ports"]!.AsArray())!;
+        Assert.Equal("unavailable", port["officialOverview"]!["status"]!.GetValue<string>());
+        Assert.Contains("does not expose", port["officialOverview"]!["reason"]!.GetValue<string>(), StringComparison.Ordinal);
+        Assert.DoesNotContain("getAdoptedDeviceDetails", port["fieldProvenance"]!["officialOverview"]!.GetValue<string>(), StringComparison.Ordinal);
+    }
+
+    [Fact]
     public async Task Enrichment_is_opt_in_and_failure_does_not_fail_the_official_read()
     {
         var disabledClient = new LegacyClient();
@@ -274,6 +564,7 @@ public sealed class LegacyReadEnrichmentServiceTests
         return new LegacyReadEnrichmentService(
             configuration,
             client,
+            contracts,
             siteResolver,
             new SecretRedactor("test-api-key"),
             NullLogger<LegacyReadEnrichmentService>.Instance);
@@ -285,6 +576,13 @@ public sealed class LegacyReadEnrichmentServiceTests
         ["name"] = $"Port {index}",
         ["stp_state"] = stpState,
         ["is_uplink"] = isUplink
+    };
+
+    private static JsonObject Network(string id, string name, int vlanId) => new()
+    {
+        ["id"] = id,
+        ["name"] = name,
+        ["vlanId"] = vlanId
     };
 
     private static JsonObject CreateOverride(int index, string settingPreference) => new()
@@ -300,12 +598,38 @@ public sealed class LegacyReadEnrichmentServiceTests
 
         public JsonNode? PrivateClients { get; init; } = new JsonArray();
 
+        public JsonNode? PortProfiles { get; init; } = new JsonObject { ["data"] = new JsonArray() };
+
+        public JsonArray Networks { get; init; } = new();
+
         public bool LegacyFailure { get; init; }
+
+        public bool ProfileFailure { get; init; }
+
+        public bool NetworkFailure { get; init; }
 
         public int LegacyReadCount { get; private set; }
 
         public Task<JsonNode?> ReadAsync(ValidatedRequest request, CancellationToken cancellationToken)
         {
+            if (request.Operation.OperationId == "getNetworksOverviewPage")
+            {
+                if (NetworkFailure)
+                {
+                    return Task.FromException<JsonNode?>(
+                        new UnifiApiException(HttpStatusCode.NotFound, "network inventory unavailable"));
+                }
+
+                return Task.FromResult<JsonNode?>(new JsonObject
+                {
+                    ["offset"] = 0,
+                    ["limit"] = 200,
+                    ["count"] = Networks.Count,
+                    ["totalCount"] = Networks.Count,
+                    ["data"] = Networks.DeepClone()
+                });
+            }
+
             Assert.Equal("getSiteOverviewPage", request.Operation.OperationId);
             return Task.FromResult<JsonNode?>(new JsonObject
             {
@@ -342,6 +666,15 @@ public sealed class LegacyReadEnrichmentServiceTests
             return LegacyFailure
                 ? Task.FromException<JsonNode?>(new UnifiApiException(HttpStatusCode.Unauthorized, "denied"))
                 : Task.FromResult(PrivateClients?.DeepClone());
+        }
+
+        public Task<JsonNode?> ReadPortProfilesAsync(string internalSiteReference, CancellationToken cancellationToken)
+        {
+            LegacyReadCount++;
+            Assert.Equal("default", internalSiteReference);
+            return LegacyFailure || ProfileFailure
+                ? Task.FromException<JsonNode?>(new UnifiApiException(HttpStatusCode.Unauthorized, "denied"))
+                : Task.FromResult(PortProfiles?.DeepClone());
         }
 
         public Task<JsonNode?> ReadClientHistoryAsync(

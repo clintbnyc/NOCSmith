@@ -142,6 +142,8 @@ public sealed class SystemLogReadService
             throw new ContractException("Private UniFi System Logs query did not return a data array.");
         }
 
+        var pageMetadata = SystemLogPageMetadata.Read(response.AsObject(), data.Count);
+
         var matching = data
             .OfType<JsonObject>()
             .Where(record => includeRead || HasStatus(record, "NEW"))
@@ -167,15 +169,15 @@ public sealed class SystemLogReadService
                 ["includeRead"] = includeRead,
                 ["sourceRecordCount"] = data.Count,
                 ["matchingRecordCount"] = matching.Length,
-                ["sourcePageNumber"] = response["page_number"]?.DeepClone(),
-                ["sourceTotalElementCount"] = response["total_element_count"]?.DeepClone(),
-                ["sourceTotalPageCount"] = response["total_page_count"]?.DeepClone(),
-                ["truncated"] = matching.Length > records.Count || HasAdditionalSourcePages(response),
+                ["sourcePageNumber"] = pageMetadata.PageNumber,
+                ["sourceTotalElementCount"] = pageMetadata.TotalElementCount,
+                ["sourceTotalPageCount"] = pageMetadata.TotalPageCount,
+                ["truncated"] = matching.Length > records.Count || pageMetadata.HasAdditionalPages,
                 ["observedAt"] = DateTimeOffset.UtcNow.ToString("O", CultureInfo.InvariantCulture)
             }
         };
 
-        var truncation = matching.Length > records.Count || HasAdditionalSourcePages(response)
+        var truncation = matching.Length > records.Count || pageMetadata.HasAdditionalPages
             ? " Results are truncated to the first controller page."
             : string.Empty;
         return new ToolResponse($"Read {records.Count} UniFi System Log event(s) from the fixed private resource.{truncation}", result);
@@ -322,8 +324,4 @@ public sealed class SystemLogReadService
                string.Equals(text, expected, StringComparison.Ordinal);
     }
 
-    private static bool HasAdditionalSourcePages(JsonNode response) =>
-        response["total_page_count"] is JsonValue totalPages &&
-        totalPages.TryGetValue<int>(out var count) &&
-        count > 1;
 }

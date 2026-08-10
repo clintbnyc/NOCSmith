@@ -353,6 +353,38 @@ public sealed class ClientHistoryReadServiceTests
     }
 
     [Fact]
+    public async Task Truncated_private_history_never_produces_offline_or_absence_classifications()
+    {
+        var client = new HistoryClient
+        {
+            History = new JsonObject
+            {
+                ["offset"] = 0,
+                ["limit"] = 1,
+                ["count"] = 1,
+                ["totalCount"] = 2,
+                ["hasMore"] = true,
+                ["data"] = new JsonArray(
+                    History(
+                        "aa:bb:cc:dd:ee:10",
+                        "Potentially incomplete",
+                        "192.168.1.10",
+                        DateTimeOffset.UtcNow.AddMinutes(-5).ToUnixTimeSeconds()))
+            }
+        };
+        var service = CreateService(client);
+
+        var response = await service.ReadAsync(null, 24, 0, 100, CancellationToken.None);
+
+        AssertNotSupported(response, "unrecognizedResponseContract");
+        var data = Assert.IsType<JsonObject>(response.Data);
+        Assert.Empty(data["offlineClientsWithinWindow"]!.AsArray());
+        Assert.Empty(data["groupMembersWithoutHistory"]!.AsArray());
+        Assert.Equal(0, client.ConnectedOverviewReadCount);
+        Assert.Equal(0, client.GroupReadCount);
+    }
+
+    [Fact]
     public async Task Malformed_group_contract_fails_closed_without_returning_history()
     {
         var client = new HistoryClient
@@ -777,9 +809,25 @@ public sealed class ClientHistoryReadServiceTests
             HistoryReadCount++;
             Assert.Equal("default", internalSiteReference);
             Assert.Contains(withinHours, new[] { 24, 72, 168, 336, 720, 4320 });
-            return HistoryException is null
-                ? Task.FromResult(History?.DeepClone())
-                : Task.FromException<JsonNode?>(HistoryException);
+            if (HistoryException is not null)
+            {
+                return Task.FromException<JsonNode?>(HistoryException);
+            }
+
+            if (History is not JsonArray history)
+            {
+                return Task.FromResult(History?.DeepClone());
+            }
+
+            return Task.FromResult<JsonNode?>(new JsonObject
+            {
+                ["offset"] = 0,
+                ["limit"] = Math.Max(1, history.Count),
+                ["count"] = history.Count,
+                ["totalCount"] = history.Count,
+                ["hasMore"] = false,
+                ["data"] = history.DeepClone()
+            });
         }
 
         public Task<JsonNode?> ReadNetworkMembersGroupsAsync(

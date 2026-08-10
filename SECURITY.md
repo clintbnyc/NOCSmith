@@ -31,9 +31,12 @@ security boundary, use a normal repository issue instead.
 
 ## Supported versions
 
-Until a tagged release policy is established, security fixes target the current
-default branch only. Older revisions, locally modified builds, stale container
-images, and unsupported controller/API combinations may not receive fixes.
+Security fixes target the current default branch. Once stable semantic releases
+are published, the latest stable release is also supported. Older revisions,
+manual `sha-*` test images, locally modified builds, stale container images, and
+unsupported controller/API combinations may not receive fixes. Stable GHCR
+releases use exact semantic-version tags; deployments should pin the published
+image digest when reproducible rollback matters.
 
 The connector is intended for a current .NET 10 runtime and a compatible UniFi
 Network Integration API. Run `doctor` after upgrades and before exposing a new

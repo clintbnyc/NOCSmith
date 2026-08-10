@@ -117,6 +117,9 @@ exactly what was skipped and why.
   stable `current` symlink; never overwrite the active release in place.
 - `scripts/publish.sh` builds and pushes the private ARM64 image. Running it is
   an external release action and always requires explicit authorization.
+- Publishing a GitHub release or dispatching
+  `.github/workflows/publish-container.yml` pushes to GHCR and likewise always
+  requires explicit authorization.
 - Keep rollback releases. Do not prune releases or repoint `current` to an older
   build unless requested.
 - For live UniFi work, prefer read-only discovery first. Preview any mutation

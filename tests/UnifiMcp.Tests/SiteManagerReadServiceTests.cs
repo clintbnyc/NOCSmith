@@ -92,6 +92,70 @@ public sealed class SiteManagerReadServiceTests
     }
 
     [Fact]
+    public async Task Cached_discovery_response_preserves_the_provider_observation_time()
+    {
+        var providerObservedAt =
+            new DateTimeOffset(2026, 7, 25, 12, 0, 0, TimeSpan.Zero);
+        var clock = new MutableTimeProvider(providerObservedAt);
+        var client = new FakeSiteManagerClient();
+        var service = CreateService(client, clock);
+
+        var first = await service.ReadInventoryAsync(
+            "sites",
+            null,
+            null,
+            null,
+            CancellationToken.None);
+        clock.Advance(TimeSpan.FromMinutes(4));
+        var cached = await service.ReadInventoryAsync(
+            "sites",
+            null,
+            null,
+            null,
+            CancellationToken.None);
+
+        Assert.Single(client.GetPaths);
+        Assert.Equal(
+            providerObservedAt,
+            DateTimeOffset.Parse(first.Data!["observedAt"]!.GetValue<string>()));
+        Assert.Equal(
+            providerObservedAt,
+            DateTimeOffset.Parse(cached.Data!["observedAt"]!.GetValue<string>()));
+    }
+
+    [Fact]
+    public async Task Fresh_discovery_response_uses_the_new_provider_observation_time()
+    {
+        var firstObservedAt =
+            new DateTimeOffset(2026, 7, 25, 12, 0, 0, TimeSpan.Zero);
+        var clock = new MutableTimeProvider(firstObservedAt);
+        var client = new FakeSiteManagerClient();
+        var service = CreateService(client, clock);
+
+        await service.ReadInventoryAsync(
+            "sites",
+            null,
+            null,
+            null,
+            CancellationToken.None);
+        var freshObservedAt = firstObservedAt +
+            TimeSpan.FromMinutes(5) +
+            TimeSpan.FromTicks(1);
+        clock.Advance(freshObservedAt - firstObservedAt);
+        var fresh = await service.ReadInventoryAsync(
+            "sites",
+            null,
+            null,
+            null,
+            CancellationToken.None);
+
+        Assert.Equal(
+            freshObservedAt,
+            DateTimeOffset.Parse(fresh.Data!["observedAt"]!.GetValue<string>()));
+        Assert.Equal(2, client.GetPaths.Count);
+    }
+
+    [Fact]
     public async Task Discovery_cache_expires_after_five_minutes()
     {
         var clock = new MutableTimeProvider(
@@ -104,6 +168,81 @@ public sealed class SiteManagerReadServiceTests
         await service.ReadInventoryAsync("sites", null, null, null, CancellationToken.None);
 
         Assert.Equal(2, client.GetPaths.Count);
+    }
+
+    [Fact]
+    public async Task Discovery_cache_is_bounded_and_evicts_the_least_recently_used_entry()
+    {
+        var client = new FakeSiteManagerClient();
+        var service = CreateService(client);
+
+        for (var index = 0; index < 16; index++)
+        {
+            await service.ReadInventoryAsync(
+                "sites",
+                null,
+                null,
+                $"cursor-{index}",
+                CancellationToken.None);
+        }
+
+        await service.ReadInventoryAsync(
+            "sites",
+            null,
+            null,
+            "cursor-0",
+            CancellationToken.None);
+        await service.ReadInventoryAsync(
+            "sites",
+            null,
+            null,
+            "cursor-overflow",
+            CancellationToken.None);
+        await service.ReadInventoryAsync(
+            "sites",
+            null,
+            null,
+            "cursor-0",
+            CancellationToken.None);
+        await service.ReadInventoryAsync(
+            "sites",
+            null,
+            null,
+            "cursor-1",
+            CancellationToken.None);
+
+        Assert.Equal(18, client.GetPaths.Count);
+        Assert.Equal(16, service.Describe()["cachedEntries"]!.GetValue<int>());
+        Assert.Equal(16, service.Describe()["maximumCacheEntries"]!.GetValue<int>());
+    }
+
+    [Fact]
+    public async Task Discovery_cache_removes_expired_entries_before_storing_a_new_response()
+    {
+        var clock = new MutableTimeProvider(
+            new DateTimeOffset(2026, 7, 25, 12, 0, 0, TimeSpan.Zero));
+        var client = new FakeSiteManagerClient();
+        var service = CreateService(client, clock);
+
+        for (var index = 0; index < 16; index++)
+        {
+            await service.ReadInventoryAsync(
+                "sites",
+                null,
+                null,
+                $"expired-{index}",
+                CancellationToken.None);
+        }
+
+        clock.Advance(TimeSpan.FromMinutes(5).Add(TimeSpan.FromTicks(1)));
+        await service.ReadInventoryAsync(
+            "sites",
+            null,
+            null,
+            "fresh",
+            CancellationToken.None);
+
+        Assert.Equal(1, service.Describe()["cachedEntries"]!.GetValue<int>());
     }
 
     [Fact]

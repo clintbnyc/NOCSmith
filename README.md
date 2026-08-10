@@ -23,7 +23,7 @@ open-ended API proxy.
 ## What it is
 
 NOCsmith connects MCP-compatible assistants to a self-hosted UniFi Network
-controller. It exposes 36 purpose-built tools for reading network state,
+controller. It exposes 37 purpose-built tools for reading network state,
 investigating client behavior, reviewing configuration, and applying approved
 changes.
 
@@ -42,6 +42,8 @@ not affiliated with or endorsed by Ubiquiti.
 | --- | --- |
 | Map the control plane | Builds source-aware snapshots across sites, devices, clients, networks, Wi-Fi, switching, firewall, ACL, DNS, VPN, WAN, vouchers, and traffic policy |
 | Hunt RF ghosts | Correlates a client with its AP and radio, then exposes RSSI, SNR, noise, PHY rates, MCS/NSS, retries, channel utilization, transmit power, roaming, and DHCP/APIPA evidence |
+| Find the bandwidth hogs | Ranks authoritative currently connected clients by nullable source-relative traffic counters while suppressing unverified upload/download and rate semantics |
+| Inspect a switch trunk | Combines official link and PoE state with bounded private port configuration, resolved native/tagged networks, applied profiles, and live watt draw |
 | Reconstruct client timelines | Reconciles authoritative current state, bounded controller history, and configured groups—or records explicit observations in a local SQLite journal for later change queries |
 | Audit intent versus reality | Surfaces missing fields, partial sources, configuration references, ungrouped clients, firmware state, and topology caveats without inventing certainty |
 | Watch the whole fleet | Adds optional read-only Site Manager inventory, console health, firmware/update state, and historical ISP metrics |
@@ -112,6 +114,20 @@ dotnet build UnifiMcp.slnx --configuration Release --no-restore
 dotnet test UnifiMcp.slnx --configuration Release --no-restore
 ```
 
+The release workflow publishes stable images to GitHub Container Registry for
+both `linux/amd64` and `linux/arm64`:
+
+```sh
+docker pull ghcr.io/webbman-nyc/unifi-mcp:1.3.0
+```
+
+The package is private by default. Authorized consumers can sign in with a
+classic GitHub personal access token scoped only to `read:packages`; if the
+package is later made public, pulls no longer require authentication. Prefer a
+published `sha256` digest when pinning a deployment. See the
+[operations reference](docs/operations.md#github-container-registry) for tag,
+authentication, visibility, and release details.
+
 Validate configuration, TLS, API access, contract selection, and enabled
 features without printing secrets:
 
@@ -132,12 +148,13 @@ production rollback procedure, use the [operations reference](docs/operations.md
 
 ## Tool families
 
-The server exposes 36 tools grouped around operator intent:
+The server exposes 37 tools grouped around operator intent:
 
 - **Discover:** capabilities, site snapshots, sites, and supporting resources
 - **Observe:** devices, clients, networks, Wi-Fi, switching, firewall, ACL,
   DNS, traffic lists, hotspot vouchers, and System Log alerts
-- **Diagnose:** current Wi-Fi RF/DHCP diagnostics and client-group audits
+- **Diagnose:** current Wi-Fi RF/DHCP diagnostics, bounded client-traffic
+  rankings, switch-port configuration/PoE enrichment, and client-group audits
 - **Remember:** explicit client collection, change queries, per-client history,
   journal health, and fingerprint-bound recovery
 - **See the fleet:** Site Manager inventory and ISP metrics
@@ -179,9 +196,10 @@ configuration and automation therefore continue to work without migration.
 - Journal: SQLite WAL on a private local filesystem
 
 At startup the connector probes the live application and controller contract.
-A controller contract is accepted only when its version matches the running
-Network application; otherwise the reviewed embedded contract remains the
-fail-closed fallback.
+A validated, exactly version-matched controller contract may supplement
+bounded response-schema capability detection, while operation IDs, methods,
+paths, parameters, and request schemas always remain restricted to the
+reviewed embedded contract.
 
 ## Documentation
 

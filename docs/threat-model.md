@@ -8,7 +8,7 @@ This document is the authoritative, repository-scoped threat model for
 changes. It describes security boundaries and vulnerability classes, not known
 vulnerabilities in the current revision.
 
-Last reviewed: 2026-08-01.
+Last reviewed: 2026-08-09.
 
 Update this model when a change adds a transport, authentication mode, upstream
 API, write category, persistent data field, executable input, deployment
@@ -20,8 +20,9 @@ NOCsmith, whose stable technical runtime identifier is `unifi-mcp`, is a private
 .NET 10 Model Context Protocol connector for a UniFi Network controller and,
 optionally, the UniFi Site Manager stable-v1 API. It turns MCP tool calls into:
 
-- reads and writes defined by a reviewed or controller-supplied UniFi Network
-  OpenAPI contract;
+- reads and writes defined by the reviewed embedded UniFi Network OpenAPI
+  operation and request schemas, with version-matched controller response
+  schemas used only for compatible capability detection;
 - narrowly fixed, opt-in private UniFi reads for data absent from the official
   contract;
 - fixed read-only Site Manager inventory and ISP-metric requests; and
@@ -53,8 +54,8 @@ deployment.
 - Confidential network and household metadata returned by reads, including
   MAC/IP addresses, names, topology, events, and ISP metrics.
 - The cleartext SQLite client journal, its integrity, and its availability.
-- The correctness of the embedded/controller OpenAPI allowlist and the
-  preview-to-apply binding for mutations.
+- The correctness of the embedded OpenAPI allowlist, controller
+  response-schema compatibility, and preview-to-apply binding for mutations.
 - The integrity of release artifacts, locked dependencies, container images,
   and deployment configuration.
 
@@ -138,7 +139,8 @@ chain threat rather than ordinary MCP input.
    discovery may also read the fixed same-origin sibling resource
    `/proxy/network/api-docs/integration.json`; caller input cannot select that
    path or another controller resource, and contract responses are capped at
-   2 MiB before JSON parsing.
+   2 MiB before JSON parsing. Normal official and fixed private API read
+   responses are capped at 16 MiB before parsing.
 4. **Connector to UniFi Site Manager.** The origin is fixed to
    `https://api.ui.com`; a separate optional key is used. Only stable-v1
    inventory and ISP-metric reads are intended.
@@ -259,18 +261,24 @@ untrusted. The important invariant is that validation produces a request only
 for a known operation and its declared schema, with escaped parameters and no
 caller-selected origin, raw path, HTTP method, or header.
 
-Existing controls include contract-defined operations, rejection of unknown
-parameters, JSON-schema validation, URI escaping, an HTTPS/suffix-constrained
-local base URL, a fixed Site Manager origin, and fixed private resources. The
+Existing controls include embedded-contract-defined operations, rejection of
+unknown parameters and undeclared request-body properties, explicit-null
+schema validation, URI escaping, an HTTPS/suffix-constrained local base URL, a
+fixed Site Manager origin, and fixed private resources. The
 private System Logs POST has an empty connector-created body and is a read;
 callers cannot choose its method, path, or body.
 
 A controller-served OpenAPI document is a special trust case. It is accepted
-only when parseable and version-matched to the live application, but a
-compromised controller could still publish a malicious same-version contract.
-Reviews should ensure such a contract cannot create arbitrary-origin requests,
-inject headers, bypass preview/apply, or cause unsafe schema complexity. The
-reviewed embedded contract must remain the fail-closed fallback.
+only when parseable, structurally bounded, and exactly version-matched to a
+non-empty live application version, and it may supplement response-schema
+capability detection only for the same reviewed operation ID, method, and
+path. Malformed references and response graphs exceeding 4,096 reachable
+schema nodes fall back to the embedded contract; runtime capability traversal
+is iterative and limited to 16,384 states per query. Operation selection,
+methods, paths, parameters, and request validation always use the reviewed
+embedded contract, so a malicious same-version document cannot expand the
+request allowlist or weaken a write schema. Reviews should preserve that split
+and its complexity ceilings.
 
 The embedded update workflow may ingest an official contract downloaded from
 the authenticated local documentation because the public developer download
@@ -312,7 +320,8 @@ treat transport authentication as fine-grained write authorization.
 
 Relevant code: `SecretRedactor.cs`, `ToolResponse.cs`,
 `ResponseMetadata.cs`, `PrivateReadResponseParser.cs`, the enrichment/read
-services (including `WifiDiagnosticsReadService.cs`), and `SnapshotService.cs`.
+services (including `WifiDiagnosticsReadService.cs` and
+`ClientTrafficReadService.cs`), and `SnapshotService.cs`.
 
 Upstream JSON can be malformed, contradictory, oversized, stale, or contain
 secret-like or instruction-like text. The connector must preserve provenance,
@@ -323,7 +332,12 @@ Existing controls include projection of private response fields, recursive
 secret-name and inline-pattern redaction, bounded history/group/log and Wi-Fi
 diagnostics reads, validated counts and pagination, per-section snapshot
 failure, explicit source/authority metadata, nullable version-drift behavior,
-and separation of current, historical, and group-membership grains. Wi-Fi
+and separation of current, historical, and group-membership grains. Private
+client-history absence classifications require a complete single-page
+envelope with consistent offset, count, limit, total count, `hasMore`, and
+continuation metadata. Unknown or partial history completeness remains
+positive evidence only, cannot make a journal collection complete, and does
+not produce interactive offline or missing-history classifications. Wi-Fi
 diagnostics combine only fixed active-client and device resources, discard
 unknown fields, and distinguish configured radio state, operational radio
 state, and explicitly documented derivations. Association duration is derived
@@ -332,6 +346,24 @@ time; epoch or ambiguous duration-like values are not passed through. Wired or
 transport-unknown client records are excluded before output limits, nested
 radio arrays have per-device and aggregate source ceilings, and anonymous
 configuration/statistics records are not correlated by array position.
+
+The client-traffic projection joins a complete official current-client
+inventory to one bounded fixed private active-client response by normalized MAC.
+It preserves zero separately from unavailable data, retains source-relative
+rx/tx direction instead of inferring upload/download, suppresses private rate
+fields whose perspective/unit/window are unverified, ranks null values last,
+and suppresses private-only records. An unavailable private source preserves
+the authoritative official client inventory with null traffic fields.
+The switch-port projection adds one fixed read-only port-profile resource and
+uses private profile/network IDs only as internal join keys. Network names and
+VLAN IDs come from a bounded official inventory; missing or incomplete joins
+remain unresolved. Official operational link/PoE state stays separate from
+private configuration and watt telemetry, voltage/current are omitted until
+their units are verified, and the ambiguous UI Edge/Participant role remains
+unavailable. A failed optional network inventory does not discard unrelated
+legacy port enrichment. Private devices, profiles, ports, networks, traffic
+records, returned rankings, and pre-parse response bytes all have explicit
+ceilings.
 
 Prompt injection through device names, comments, or System Log descriptions
 is not code execution in this repository, but it becomes security-relevant if
@@ -399,9 +431,11 @@ growth, or provider throttling.
 
 Existing controls include bounded configuration values and page sizes,
 timeouts, limited Site Manager concurrency/queues, a process-wide rate ceiling
-and cooldown, five-minute coalescing/caching for discovery, pending-preview
-limits, journal size/retention caps, collection locks, and structured partial
-results for appropriate read aggregation.
+and cooldown, five-minute coalescing and a 16-entry least-recently-used cache
+for discovery, pending-preview limits, journal size/retention caps, collection
+locks, and structured partial results for appropriate read aggregation. Local
+site-reference resolution accepts at most 2,000 declared sites across 10
+pages and requires stable, progressing count/offset/limit/total-count metadata.
 
 Reads may retry transient failures and `429`; writes are sent exactly once.
 Review retry changes for amplification, retry-after overflow, slot starvation,
@@ -412,18 +446,46 @@ unless they prevent recovery or disrupt essential network administration.
 ### Build, contract update, and release
 
 Relevant files: `packages.lock.json`, `global.json`, `Directory.Build.props`,
-`Dockerfile`, `docker-compose.yml`, and `scripts/`.
+`Dockerfile`, `docker-compose.yml`, `.github/workflows/`, and `scripts/`.
 
 The build executes NuGet package code and uses .NET container images. The
 repository pins locked packages, treats warnings as errors, explicitly pins
 the native SQLite bundle, and digest-pins both container stages. The OpenAPI
 update script downloads over HTTPS and validates document shape and the
 expected version before replacement. Publishing scripts can install a local
-release or push an ARM64 image to a private registry.
+release or push an ARM64 image to a private registry. The GitHub release
+workflow is a separate boundary that can publish `linux/amd64` and
+`linux/arm64` images to GHCR. Stable releases publish exact-version,
+full-commit SHA, and `latest` tags; manual runs publish only the full-commit SHA
+tag and do not deploy it.
+
+GitHub release creators, Actions, the run-scoped `GITHUB_TOKEN`, GHCR package
+access, hosted runners, third-party actions, QEMU, and BuildKit are trusted at
+this boundary. The workflow limits its permissions to repository reads and
+package writes, pins actions and helper images by immutable revision, requires
+the stable release version to match the application and its commit to belong to
+the default branch, and runs locked restore, formatting, tests, and diff checks
+before registry login. Repository tag protection remains an operator control.
+The Docker build context excludes Git metadata, local environment files,
+secrets, build outputs, and local data. Images carry a repository source label,
+BuildKit provenance, and an SBOM, and the workflow verifies both intended
+platform manifests after publication.
+
+The package begins private. Its repository linkage, inherited access, Actions
+access, and visibility require operator verification after first publication.
+Making the package public is irreversible and exposes compiled assemblies and
+the embedded contract independently of source-repository visibility; the
+repository does not currently declare a project license. GitHub-native artifact
+attestations are unavailable for this private repository on the current plan,
+so BuildKit registry provenance is used without overstating it as a GitHub
+identity attestation. Deployments should pin the published digest when rollback
+or reproducibility matters rather than relying on the mutable `latest` tag.
 
 Supply-chain review should cover unexpected lockfile changes, package/build
 script execution, digest updates, OpenAPI semantic changes, dirty-source
-publishing, registry identity, and symlink-safe activation of local releases.
+publishing, release-tag ancestry and version matching, workflow permissions and
+action/helper-image pins, registry identity and package visibility, manifest
+platforms and provenance, and symlink-safe activation of local releases.
 Developer tooling does not process MCP attacker input, but compromise here can
 replace the entire runtime and is therefore high impact.
 

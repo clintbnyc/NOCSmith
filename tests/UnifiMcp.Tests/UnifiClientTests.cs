@@ -1,4 +1,5 @@
 using System.Net;
+using System.Net.Http;
 using System.Text;
 using System.Text.Json.Nodes;
 using Microsoft.Extensions.Logging.Abstractions;
@@ -65,6 +66,73 @@ public sealed class UnifiClientTests
             client.GetFixedAsync("../api-docs/integration.json", CancellationToken.None));
 
         Assert.Contains("2097152-byte safety limit", exception.Message, StringComparison.Ordinal);
+        Assert.Single(handler.Requests);
+    }
+
+    [Theory]
+    [InlineData("clients", true)]
+    [InlineData("clients", false)]
+    [InlineData("profiles", true)]
+    public async Task Private_reads_reject_oversized_responses_before_parsing(
+        string resource,
+        bool includeContentLength)
+    {
+        var oversized = new string('x', 16 * 1024 * 1024 + 1);
+        var content = new StringContent(oversized);
+        if (!includeContentLength)
+        {
+            content.Headers.ContentLength = null;
+        }
+
+        var handler = new RecordingHandler(_ => new HttpResponseMessage(HttpStatusCode.OK)
+        {
+            Content = content
+        });
+        using var client = CreateClient(handler);
+
+        var exception = await Assert.ThrowsAsync<ContractException>(() => resource == "clients"
+            ? client.ReadPrivateClientsAsync("default", CancellationToken.None)
+            : client.ReadPortProfilesAsync("default", CancellationToken.None));
+
+        Assert.Contains("16777216-byte safety limit", exception.Message, StringComparison.Ordinal);
+        Assert.Single(handler.Requests);
+    }
+
+    [Fact]
+    public async Task Read_retries_transport_failures_while_buffering_the_response_body()
+    {
+        var attempts = 0;
+        var handler = new RecordingHandler(_ =>
+        {
+            attempts++;
+            return attempts == 1
+                ? new HttpResponseMessage(HttpStatusCode.OK)
+                {
+                    Content = new BodyReadFailureContent()
+                }
+                : JsonResponse(HttpStatusCode.OK, "{\"ok\":true}");
+        });
+        using var client = CreateClient(handler, (_, _) => Task.CompletedTask);
+
+        var response = await client.ReadAsync(Request("getInfo", requireRead: true), CancellationToken.None);
+
+        Assert.True(response!["ok"]!.GetValue<bool>());
+        Assert.Equal(2, handler.Requests.Count);
+    }
+
+    [Fact]
+    public async Task Read_preserves_the_response_charset_when_bounding_the_body()
+    {
+        var handler = new RecordingHandler(_ => new HttpResponseMessage(HttpStatusCode.OK)
+        {
+            Content = new StringContent("{\"name\":\"café\"}", Encoding.Latin1, "application/json")
+        });
+        using var client = CreateClient(handler);
+
+        var response = await client.ReadAsync(Request("getInfo", requireRead: true), CancellationToken.None);
+
+        Assert.Equal("café", response!["name"]!.GetValue<string>());
+        Assert.Single(handler.Requests);
     }
 
     [Fact]
@@ -184,6 +252,7 @@ public sealed class UnifiClientTests
         using var client = CreateClient(handler);
 
         await client.ReadLegacyDevicesAsync("default", CancellationToken.None);
+        await client.ReadPortProfilesAsync("default", CancellationToken.None);
         await client.ReadPrivateClientsAsync("default", CancellationToken.None);
         await client.ReadClientHistoryAsync("default", 24, CancellationToken.None);
         await client.ReadNetworkMembersGroupsAsync("default", CancellationToken.None);
@@ -195,6 +264,13 @@ public sealed class UnifiClientTests
             {
                 Assert.Equal("GET", request.Method);
                 Assert.Equal("https://unifi.nutria-newton.ts.net/proxy/network/api/s/default/stat/device", request.Uri);
+                Assert.Equal("test-api-key", request.ApiKey);
+                Assert.Null(request.Body);
+            },
+            request =>
+            {
+                Assert.Equal("GET", request.Method);
+                Assert.Equal("https://unifi.nutria-newton.ts.net/proxy/network/api/s/default/rest/portconf", request.Uri);
                 Assert.Equal("test-api-key", request.ApiKey);
                 Assert.Null(request.Body);
             },
@@ -265,6 +341,8 @@ public sealed class UnifiClientTests
 
         await Assert.ThrowsAsync<ArgumentException>(() =>
             client.ReadLegacyDevicesAsync("../default", CancellationToken.None));
+        await Assert.ThrowsAsync<ArgumentException>(() =>
+            client.ReadPortProfilesAsync("../default", CancellationToken.None));
         await Assert.ThrowsAsync<ArgumentException>(() =>
             client.ReadClientHistoryAsync("../default", 24, CancellationToken.None));
         await Assert.ThrowsAsync<ArgumentException>(() =>
@@ -346,6 +424,18 @@ public sealed class UnifiClientTests
                     ? null
                     : await request.Content.ReadAsStringAsync(cancellationToken).ConfigureAwait(false)));
             return _response(request);
+        }
+    }
+
+    private sealed class BodyReadFailureContent : HttpContent
+    {
+        protected override Task SerializeToStreamAsync(Stream stream, TransportContext? context) =>
+            Task.FromException(new HttpRequestException("simulated response body transport failure"));
+
+        protected override bool TryComputeLength(out long length)
+        {
+            length = 0;
+            return false;
         }
     }
 

@@ -96,6 +96,214 @@ public sealed class ContractTests
     }
 
     [Fact]
+    public void Validation_rejects_undeclared_body_property_by_default()
+    {
+        var contract = OpenApiContract.LoadEmbedded();
+        var operation = contract.GetOperation("executeAdoptedDeviceAction", requireRead: false);
+        var path = new Dictionary<string, string>
+        {
+            ["siteId"] = "00000000-0000-0000-0000-000000000001",
+            ["deviceId"] = "00000000-0000-0000-0000-000000000002"
+        };
+
+        var exception = Assert.Throws<ContractException>(() =>
+            contract.ValidateAndBuild(
+                operation,
+                path,
+                null,
+                new JsonObject
+                {
+                    ["action"] = "RESTART",
+                    ["redirect"] = "https://example.invalid"
+                }));
+
+        Assert.Contains("body.redirect", exception.Message, StringComparison.Ordinal);
+        Assert.Contains("not allowed", exception.Message, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void Validation_rejects_explicit_null_for_nonnullable_property()
+    {
+        var contract = OpenApiContract.LoadEmbedded();
+        var operation = contract.GetOperation("createVouchers", requireRead: false);
+        var path = new Dictionary<string, string>
+        {
+            ["siteId"] = "00000000-0000-0000-0000-000000000001"
+        };
+
+        var exception = Assert.Throws<ContractException>(() =>
+            contract.ValidateAndBuild(
+                operation,
+                path,
+                null,
+                new JsonObject
+                {
+                    ["name"] = "test",
+                    ["timeLimitMinutes"] = 1,
+                    ["count"] = null
+                }));
+
+        Assert.Contains("body.count", exception.Message, StringComparison.Ordinal);
+        Assert.Contains("may not be null", exception.Message, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void Validation_rejects_explicit_null_for_nonnullable_array_item()
+    {
+        var contract = OpenApiContract.LoadEmbedded();
+        var operation = contract.GetOperation("updateAclRuleOrdering", requireRead: false);
+        var path = new Dictionary<string, string>
+        {
+            ["siteId"] = "00000000-0000-0000-0000-000000000001"
+        };
+
+        var exception = Assert.Throws<ContractException>(() =>
+            contract.ValidateAndBuild(
+                operation,
+                path,
+                null,
+                new JsonObject
+                {
+                    ["orderedAclRuleIds"] = new JsonArray((JsonNode?)null)
+                }));
+
+        Assert.Contains("body.orderedAclRuleIds[0]", exception.Message, StringComparison.Ordinal);
+        Assert.Contains("may not be null", exception.Message, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void Validation_accepts_explicit_null_when_schema_declares_it_nullable()
+    {
+        var document = new JsonObject
+        {
+            ["openapi"] = "3.1.0",
+            ["info"] = new JsonObject { ["title"] = "test", ["version"] = "1" },
+            ["paths"] = new JsonObject
+            {
+                ["/things"] = new JsonObject
+                {
+                    ["post"] = new JsonObject
+                    {
+                        ["operationId"] = "setThing",
+                        ["requestBody"] = new JsonObject
+                        {
+                            ["required"] = true,
+                            ["content"] = new JsonObject
+                            {
+                                ["application/json"] = new JsonObject
+                                {
+                                    ["schema"] = new JsonObject
+                                    {
+                                        ["type"] = "object",
+                                        ["properties"] = new JsonObject
+                                        {
+                                            ["note"] = new JsonObject
+                                            {
+                                                ["type"] = new JsonArray("string", "null")
+                                            },
+                                            ["legacyNote"] = new JsonObject
+                                            {
+                                                ["type"] = "string",
+                                                ["nullable"] = true
+                                            },
+                                            ["nullOnly"] = new JsonObject { ["type"] = "null" },
+                                            ["anything"] = new JsonObject()
+                                        }
+                                    }
+                                }
+                            }
+                        },
+                        ["responses"] = new JsonObject()
+                    }
+                }
+            }
+        };
+        var contract = OpenApiContract.Parse(document.ToJsonString(), "test");
+        var operation = contract.GetOperation("setThing", requireRead: false);
+        var body = new JsonObject
+        {
+            ["note"] = null,
+            ["legacyNote"] = null,
+            ["nullOnly"] = null,
+            ["anything"] = null
+        };
+
+        var nonNullException = Assert.Throws<ContractException>(() =>
+            contract.ValidateAndBuild(
+                operation,
+                null,
+                null,
+                new JsonObject { ["nullOnly"] = "not-null" }));
+        var request = contract.ValidateAndBuild(operation, null, null, body);
+        var unconstrainedObjectRequest = contract.ValidateAndBuild(
+            operation,
+            null,
+            null,
+            new JsonObject
+            {
+                ["anything"] = new JsonObject { ["arbitraryNestedField"] = true }
+            });
+
+        Assert.Contains("body.nullOnly must be null", nonNullException.Message, StringComparison.Ordinal);
+        Assert.True(JsonNode.DeepEquals(body, request.Body));
+        Assert.NotNull(unconstrainedObjectRequest.Body);
+    }
+
+    [Theory]
+    [InlineData("createAclRule", "IPV4")]
+    [InlineData("updateAclRule", "IPV4")]
+    [InlineData("createAclRule", "MAC")]
+    [InlineData("updateAclRule", "MAC")]
+    public void Acl_rule_filters_are_validated_by_the_selected_discriminator_schema(
+        string operationId,
+        string ruleType)
+    {
+        var contract = OpenApiContract.LoadEmbedded();
+        var operation = contract.GetOperation(operationId, requireRead: false);
+        var path = new Dictionary<string, string>
+        {
+            ["siteId"] = "00000000-0000-0000-0000-000000000001"
+        };
+        if (operationId == "updateAclRule")
+        {
+            path["aclRuleId"] = "00000000-0000-0000-0000-000000000002";
+        }
+
+        var endpoint = ruleType == "IPV4"
+            ? new JsonObject
+            {
+                ["type"] = "IP_ADDRESSES_OR_SUBNETS",
+                ["ipAddressesOrSubnets"] = new JsonArray("192.0.2.0/24")
+            }
+            : new JsonObject
+            {
+                ["type"] = "MAC_ADDRESSES",
+                ["macAddresses"] = new JsonArray("02:00:00:00:00:01")
+            };
+        var body = new JsonObject
+        {
+            ["action"] = "ALLOW",
+            ["enabled"] = true,
+            ["name"] = "Allow test traffic",
+            ["sourceFilter"] = endpoint,
+            ["type"] = ruleType
+        };
+        if (ruleType == "MAC")
+        {
+            body["networkIdFilter"] = "00000000-0000-0000-0000-000000000003";
+        }
+
+        var bodyWithUnknownFilterField = body.DeepClone().AsObject();
+        bodyWithUnknownFilterField["sourceFilter"]!["controllerOnlyField"] = true;
+        var exception = Assert.Throws<ContractException>(() =>
+            contract.ValidateAndBuild(operation, path, null, bodyWithUnknownFilterField));
+        var request = contract.ValidateAndBuild(operation, path, null, body);
+
+        Assert.Contains("body.sourceFilter.controllerOnlyField", exception.Message, StringComparison.Ordinal);
+        Assert.True(JsonNode.DeepEquals(body, request.Body));
+    }
+
+    [Fact]
     public void Discriminator_normalization_rejects_aliases_without_declared_wire_enum()
     {
         var contract = OpenApiContract.LoadEmbedded();
@@ -208,8 +416,13 @@ public sealed class ContractTests
             }
         };
 
+        var bodyWithNestedUnknown = body.DeepClone().AsObject();
+        bodyWithNestedUnknown["source"]!["controllerOnlyField"] = true;
+        var exception = Assert.Throws<ContractException>(() =>
+            contract.ValidateAndBuild(operation, path, null, bodyWithNestedUnknown));
         var request = contract.ValidateAndBuild(operation, path, null, body);
 
+        Assert.Contains("body.source.controllerOnlyField", exception.Message, StringComparison.Ordinal);
         Assert.True(JsonNode.DeepEquals(body, request.Body));
     }
 }

@@ -13,6 +13,9 @@ public interface IUnifiClient
 
     Task<JsonNode?> ReadLegacyDevicesAsync(string internalSiteReference, CancellationToken cancellationToken);
 
+    Task<JsonNode?> ReadPortProfilesAsync(string internalSiteReference, CancellationToken cancellationToken) =>
+        throw new NotSupportedException();
+
     Task<JsonNode?> ReadPrivateClientsAsync(string internalSiteReference, CancellationToken cancellationToken);
 
     Task<JsonNode?> ReadClientHistoryAsync(

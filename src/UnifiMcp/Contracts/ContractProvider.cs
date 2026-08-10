@@ -79,7 +79,7 @@ public sealed class ContractProvider
                     var contract = OpenApiContract.Parse(
                         candidateObject.ToJsonString(),
                         "controller:" + location.SourcePath);
-                    if (!string.IsNullOrWhiteSpace(LiveApplicationVersion) &&
+                    if (string.IsNullOrWhiteSpace(LiveApplicationVersion) ||
                         !string.Equals(contract.Version, LiveApplicationVersion, StringComparison.Ordinal))
                     {
                         LastProbeWarning = $"Controller contract {contract.Version} did not match live Network {LiveApplicationVersion}; " +
@@ -87,7 +87,7 @@ public sealed class ContractProvider
                         continue;
                     }
 
-                    Current = contract;
+                    Current = contract.RestrictOperationsTo(embedded);
                     LastProbeWarning = null;
                     _logger.LogInformation(
                         "Loaded UniFi Network {Version} contract from {Path}.",
@@ -95,7 +95,7 @@ public sealed class ContractProvider
                         location.SourcePath);
                     return;
                 }
-                catch (Exception exception) when (exception is UnifiApiException or ContractException or HttpRequestException or TaskCanceledException)
+                catch (Exception exception) when (exception is UnifiApiException or ContractException or HttpRequestException or InvalidOperationException or TaskCanceledException)
                 {
                     _logger.LogDebug(
                         "UniFi contract probe path {Path} was unavailable: {Message}",

@@ -8,6 +8,8 @@ namespace UnifiMcp.Api;
 public sealed class SiteResolver
 {
     private const int SitePageSize = 200;
+    private const int MaximumSites = 2000;
+    private const int MaximumSitePages = 10;
 
     private readonly UnifiConfiguration _configuration;
     private readonly ContractProvider _contracts;
@@ -77,7 +79,10 @@ public sealed class SiteResolver
             var contract = _contracts.Current;
             var operation = contract.GetOperation("getSiteOverviewPage", requireRead: true);
             var offset = 0;
-            while (true)
+            long? expectedTotalCount = null;
+            var seenSiteIds = new HashSet<string>(StringComparer.Ordinal);
+            var paginationComplete = false;
+            for (var pageNumber = 0; pageNumber < MaximumSitePages; pageNumber++)
             {
                 var request = contract.ValidateAndBuild(
                     operation,
@@ -89,12 +94,37 @@ public sealed class SiteResolver
                     },
                     null);
                 var response = await _client.ReadAsync(request, cancellationToken).ConfigureAwait(false);
-                var sites = response?["data"] as JsonArray
+                var responseObject = response as JsonObject
+                    ?? throw new ContractException("UniFi site overview did not return an object.");
+                var sites = responseObject["data"] as JsonArray
                     ?? throw new ContractException("UniFi site overview did not return a data array.");
-                var site = sites
-                    .OfType<JsonObject>()
-                    .SingleOrDefault(candidate =>
-                        string.Equals(candidate["id"]?.GetValue<string>(), siteId, StringComparison.Ordinal));
+                var totalCount = ValidatePage(responseObject, sites, offset, expectedTotalCount);
+                expectedTotalCount ??= totalCount;
+
+                JsonObject? site = null;
+                foreach (var node in sites)
+                {
+                    if (node is not JsonObject candidate ||
+                        candidate["id"] is not JsonValue idValue ||
+                        !idValue.TryGetValue<string>(out var candidateId) ||
+                        string.IsNullOrWhiteSpace(candidateId))
+                    {
+                        throw new ContractException(
+                            "UniFi site overview returned a site without a valid id.");
+                    }
+
+                    if (!seenSiteIds.Add(candidateId))
+                    {
+                        throw new ContractException(
+                            "UniFi site overview pagination returned a duplicate site id.");
+                    }
+
+                    if (string.Equals(candidateId, siteId, StringComparison.Ordinal))
+                    {
+                        site = candidate;
+                    }
+                }
+
                 if (site is not null)
                 {
                     var internalReference = site["internalReference"]?.GetValue<string>();
@@ -107,20 +137,26 @@ public sealed class SiteResolver
                     return internalReference;
                 }
 
-                var totalCount = ReadTotalCount(response)
-                    ?? throw new ContractException("UniFi site overview did not return a valid totalCount.");
                 var nextOffset = (long)offset + sites.Count;
-                if (sites.Count == 0 || nextOffset >= totalCount)
+                if (nextOffset >= totalCount)
                 {
+                    paginationComplete = true;
                     break;
                 }
 
-                if (nextOffset > int.MaxValue)
+                if (sites.Count == 0)
                 {
-                    throw new ContractException("UniFi site pagination exceeded the supported offset range.");
+                    throw new ContractException(
+                        "UniFi site overview pagination ended before the declared totalCount.");
                 }
 
                 offset = (int)nextOffset;
+            }
+
+            if (!paginationComplete)
+            {
+                throw new ContractException(
+                    $"UniFi site overview pagination exceeded the safety limit of {MaximumSitePages} pages.");
             }
 
             throw new ContractException($"Site {siteId} was not found in the sites available to this API key.");
@@ -148,20 +184,42 @@ public sealed class SiteResolver
         return result;
     }
 
-    private static long? ReadTotalCount(JsonNode? response)
+    private static long ValidatePage(
+        JsonObject response,
+        JsonArray sites,
+        int requestedOffset,
+        long? expectedTotalCount)
     {
-        if (response?["totalCount"] is not JsonValue value)
+        var count = ReadNonNegativeInteger(response["count"], "count");
+        var offset = ReadNonNegativeInteger(response["offset"], "offset");
+        var limit = ReadNonNegativeInteger(response["limit"], "limit");
+        var totalCount = ReadNonNegativeInteger(response["totalCount"], "totalCount");
+        if (count != sites.Count ||
+            offset != requestedOffset ||
+            limit != SitePageSize ||
+            count > limit ||
+            totalCount < offset + count ||
+            totalCount > MaximumSites ||
+            expectedTotalCount is not null && totalCount != expectedTotalCount)
         {
-            return null;
+            throw new ContractException(
+                "UniFi site overview pagination metadata was inconsistent or out of bounds.");
         }
 
-        if (value.TryGetValue<long>(out var longValue) && longValue >= 0)
+        return totalCount;
+    }
+
+    private static long ReadNonNegativeInteger(JsonNode? node, string field)
+    {
+        if (node is JsonValue value &&
+            (value.TryGetValue<long>(out var longValue) ||
+             value.TryGetValue<int>(out var intValue) && (longValue = intValue) >= 0) &&
+            longValue >= 0)
         {
             return longValue;
         }
 
-        return value.TryGetValue<int>(out var intValue) && intValue >= 0
-            ? intValue
-            : null;
+        throw new ContractException(
+            $"UniFi site overview did not return a valid nonnegative {field}.");
     }
 }

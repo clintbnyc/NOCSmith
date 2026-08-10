@@ -5,11 +5,11 @@ local and Pinode environments. Start with the product-facing
 [README](../README.md) if you are evaluating or setting up the connector for
 the first time.
 
-Private MCP access to UniFi Network on pinode, with stdio and stateless Streamable HTTP transports plus optional read-only UniFi Site Manager fleet enrichment. The connector uses the local official Integration API as the authority for detailed state and every write. Site Manager stable-v1 reads add fleet host/site/device inventory, firmware/update state, and historical ISP metrics. Narrowly projected, opt-in private local reads remain available for documentation fields, client groups, and System Log events unavailable from the official schema. The local data plane uses the active UniFi OS Server through the Tailscale HTTPS name:
+Private MCP access to UniFi Network on pinode, with stdio and stateless Streamable HTTP transports plus optional read-only UniFi Site Manager fleet enrichment. The connector uses the local official Integration API as the authority for detailed state and every write. Site Manager stable-v1 reads add fleet host/site/device inventory, firmware/update state, and historical ISP metrics. Narrowly projected, opt-in private local reads remain available for switch-port configuration, client traffic and diagnostics, client groups, and System Log events unavailable from the official schema. The local data plane uses the active UniFi OS Server through the Tailscale HTTPS name:
 
 `https://unifi.nutria-newton.ts.net/proxy/network/integration`
 
-It does not use the stopped `/srv/unifi` Docker rollback stack, controller database access, an Internet-facing listener, or insecure TLS bypasses. The Pinode HTTP origin is loopback-only and is exposed privately by Tailscale Serve. Private controller access, when explicitly enabled, permits only one fixed legacy device GET, one fixed v2 active-client GET, one fixed bounded v2 client-history GET, one fixed v2 client-group GET, and one fixed read-only System Logs query, and never returns their raw responses.
+It does not use the stopped `/srv/unifi` Docker rollback stack, controller database access, an Internet-facing listener, or insecure TLS bypasses. The Pinode HTTP origin is loopback-only and is exposed privately by Tailscale Serve. Private controller access, when explicitly enabled, permits only fixed legacy device and port-profile GETs, one fixed v2 active-client GET, one fixed bounded v2 client-history GET, one fixed v2 client-group GET, and one fixed read-only System Logs query, and never returns their raw responses.
 
 ## Security model
 
@@ -26,11 +26,12 @@ calibration used during security reviews.
 - Streamable HTTP defaults to bearer authentication. The Pinode profile trusts `Tailscale-User-Login` only on a Unix socket inside a `0700` directory owned by the non-root container user. Tailscale Serve runs as root, injects the authenticated tailnet identity, and can connect to that socket; unprivileged local host processes cannot. Tailscale 1.98.9 or newer is required because it restricts Unix-socket Serve targets to root.
 - HTTP requests must use the configured public `Host`; a supplied `Origin` must match the same HTTPS authority. MCP responses are marked `Cache-Control: no-store`.
 - HTTPS uses the platform/.NET trust store plus hostname validation. Local stdio uses `unifi.nutria-newton.ts.net`; the Pinode container uses the LAN certificate name `unifi.webbman.nyc` and mounts Pinode's trusted CA bundle read-only. There is no certificate-validation override and no direct-IP fallback.
-- Every normal API operation must exist in the loaded OpenAPI contract. Optional private access is separately constrained to GET `stat/device`, GET `v2/api/site/{site}/clients/active?includeTrafficUsage=true&includeUnifiDevices=true`, GET `v2/api/site/{site}/clients/history?onlyNonBlocked=true&includeUnifiDevices=true&withinHours={bounded-value}`, GET `v2/api/site/{site}/network-members-groups`, and an empty-body query-style POST to `v2/api/site/{site}/system-log/all`. The System Logs POST is a read operation used by Network 10.5.67 and accepts no caller-supplied body. The history GET accepts only the six time-bounded values used by the authenticated Network 10.5.67 UI. Arbitrary private URLs, methods, query keys, and writes are rejected.
+- Every normal API operation must exist in the loaded OpenAPI contract. Optional private access is separately constrained to GET `stat/device`, GET `rest/portconf`, GET `v2/api/site/{site}/clients/active?includeTrafficUsage=true&includeUnifiDevices=true`, GET `v2/api/site/{site}/clients/history?onlyNonBlocked=true&includeUnifiDevices=true&withinHours={bounded-value}`, GET `v2/api/site/{site}/network-members-groups`, and an empty-body query-style POST to `v2/api/site/{site}/system-log/all`. The System Logs POST is a read operation used by Network 10.5.67 and accepts no caller-supplied body. The history GET accepts only the six time-bounded values used by the authenticated Network 10.5.67 UI. Arbitrary private URLs, methods, query keys, and writes are rejected.
+- Official and private controller API read responses are capped at 16 MiB before JSON parsing. The separately loaded controller OpenAPI document retains its tighter 2 MiB cap.
 - Site Manager permits only stable `/v1` host, site, device, and ISP-metric reads. Early Access, SD-WAN, Cloud Connector proxying, arbitrary URLs, and Site Manager writes are rejected.
 - Responses, exceptions, snapshots, and previews are recursively redacted. Wi-Fi credentials, API keys, tokens, passwords, pre-shared keys, and hotspot voucher codes are never returned.
 - Read operations retry 429, transient HTTP failures, and timeouts, including the fixed query-style System Logs POST. Mutations are sent exactly once and are never automatically retried.
-- Site Manager requests share a process-local rolling ceiling of 9,000 requests per 60 seconds, 100-request rate-limit and concurrency queues, and four concurrent request slots. Discovery pages use the provider maximum of 500 records and are cached/coalesced for five minutes. A `429` establishes a process-wide cooldown from delta-seconds or HTTP-date `Retry-After`; cooldown waits occur without occupying a dispatch slot, and the permit is rechecked after a slot is acquired so no newly dispatched request bypasses the provider wait. Waits beyond five minutes return structured `rateLimited` metadata.
+- Site Manager requests share a process-local rolling ceiling of 9,000 requests per 60 seconds, 100-request rate-limit and concurrency queues, and four concurrent request slots. Discovery pages use the provider maximum of 500 records and are cached/coalesced for five minutes in a 16-entry least-recently-used cache; expired entries are removed before reuse or insertion. A `429` establishes a process-wide cooldown from delta-seconds or HTTP-date `Retry-After`; cooldown waits occur without occupying a dispatch slot, and the permit is rechecked after a slot is acquired so no newly dispatched request bypasses the provider wait. Waits beyond five minutes return structured `rateLimited` metadata.
 
 ## Prerequisites
 
@@ -77,13 +78,44 @@ From the Environment's **Destinations** tab, configure a local `.env` file at th
 
 The path is ignored by Git. 1Password mounts it as an in-memory FIFO and prompts for authorization when the connector reads it. Do not leave the mounted file open in an editor because local Environment files are not designed for concurrent readers. There is intentionally no service-account or plaintext fallback.
 
-Set `UNIFI_ENABLE_LEGACY_READ_ENRICHMENT=true` only when port labels, STP-related state/configuration fields, device/client notes and comments, bounded client history, client-group membership, current Wi-Fi diagnostics, or System Log events are needed. The legacy-named variable is retained for configuration compatibility and gates all five private resources. The same `X-API-Key` is used; no administrator username/password session or browser cookie is introduced. The enrichment adapter reads devices from the fixed legacy `/proxy/network/api/s/{site}/stat/device` resource and active clients from the fixed private `/proxy/network/v2/api/site/{site}/clients/active?includeTrafficUsage=true&includeUnifiDevices=true` resource, joins records by MAC address, and returns only:
+Set `UNIFI_ENABLE_LEGACY_READ_ENRICHMENT=true` only when port labels, STP-related state/configuration fields, switch-port VLAN/profile/PoE detail, current client traffic, device/client notes and comments, bounded client history, client-group membership, current Wi-Fi diagnostics, or System Log events are needed. The legacy-named variable is retained for configuration compatibility and gates all six private resource patterns. The same `X-API-Key` is used; no administrator username/password session or browser cookie is introduced. The enrichment adapter reads devices from the fixed legacy `/proxy/network/api/s/{site}/stat/device` resource, port profiles from fixed `/proxy/network/api/s/{site}/rest/portconf`, and active clients from the fixed private `/proxy/network/v2/api/site/{site}/clients/active?includeTrafficUsage=true&includeUnifiDevices=true` resource. It returns only:
 
 - device/client IDs and MAC addresses needed to identify projected records;
 - port index, custom label, controller-native STP-related state and configuration fields, uplink flag, and selected STP mode fields;
+- configured PoE mode and live `poe_power` watts when valid;
+- native and allowed-tagged networks resolved to redacted official names and VLAN IDs through an at-most-200-network inventory;
+- applied port-profile name resolved through an at-most-500-profile fixed response; and
 - `note`, `notes`, `comment`, and `comments` free text.
 
-Raw private responses, VLAN/network identifiers, authentication material, device keys, traffic counters, and all other fields are discarded before tool output is built. Selected free text is passed through the connector's secret redactor, including inline password, token, API-key, PSK, and private-key patterns. Enrichment failures are reported under `_connector.legacyReadEnrichment` without failing the official read.
+Device enrichment processes at most 1,000 private devices and 256 ports or overrides per device. Private network/profile identifiers are internal join keys and are never returned. Missing network/profile joins are `unresolved`; unsupported fields are null or `unavailable`. Official link speed/state and PoE enabled/standard/state remain visibly separate from private configured state and live watt telemetry. Voltage/current are not projected because their unit semantics have not been verified, and the normalized UniFi UI Edge/Participant STP role remains unavailable rather than inferred.
+
+Raw private responses, authentication material, device keys, unrelated port fields, and all other fields are discarded before tool output is built. Selected free text is passed through the connector's secret redactor, including inline password, token, API-key, PSK, and private-key patterns. An unavailable or malformed optional port-profile or official network-inventory response leaves existing device enrichment intact and reports only the dependent fields and source as unavailable. Core enrichment failures are reported under `_connector.legacyReadEnrichment` without failing the official read. Device overview pages do not claim device-details port provenance; official per-port operational data is available only when the official device-details response supplies it.
+
+### Current client traffic
+
+`unifi_client_traffic` joins the complete bounded official connected-client
+inventory to the fixed active-client private response by normalized MAC address.
+It returns at most 200 clients (default 25), optionally filters one MAC, and
+ranks by `receivedBytes`, `transmittedBytes`, or `combinedBytes`. Official pagination
+is capped at 2,000 clients; the private source is capped at 5,000 records.
+Private-only records never create a connected client. An unavailable,
+unsupported, malformed, or internally contradictory private response preserves
+the official client inventory with null traffic values and explicit unavailable
+source metadata.
+
+`receivedBytes`/`rx_bytes` and `transmittedBytes`/`tx_bytes` preserve the
+controller's source-relative direction at observation time. The observation
+perspective, reset, rollover, and accounting window are undocumented, so the
+connector does not label these counters client upload/download. The private
+`rx_bytes-r` and `tx_bytes-r` values are suppressed because their perspective,
+unit, and sampling window have not been verified; normalized rate fields remain
+null and the connector never derives a rate. Packet counters use the same
+source-relative received/transmitted naming when valid. Zero remains zero,
+while missing, malformed, negative, or out-of-range fields are null.
+`combinedBytes` is derived only when both directional counters are available,
+and null sort values rank after available values. Every response includes its
+observation timestamp, limits, source authority, provenance, and counter/rate
+semantics.
 
 `unifi_clients` action `history` is a separate, opt-in read and does not change
 the `list` or `get` actions. Network `10.5.67`'s authenticated client UI was
@@ -97,11 +129,14 @@ The action accepts only the UI's bounded `historyHours` values: `24`, `72`,
 `168`, `336`, `720`, or `4320`; it deliberately rejects the UI's all-time
 value. `offset` and `limit` provide connector-side pagination independently
 over each returned classification, with a maximum limit of 200. The controller
-history response itself is capped at 10,000 records and must match the
-validated object-record contract. Official current-client pages must also
-match their declared count, offset, limit, and total count; incomplete or
-contradictory pagination fails closed rather than risking a false offline
-classification.
+history response itself is capped at 10,000 records. Absence classifications
+additionally require a complete single-page envelope with `offset=0`, `count`
+matching `data`, a positive `limit`, `totalCount=count`, `hasMore=false`, and
+no continuation token. Unwrapped arrays, missing completeness metadata, and
+partial or contradictory pagination remain positive evidence only for journal
+collection; the interactive history action returns `status: notSupported`
+with empty classifications. Official current-client pages must also match
+their declared count, offset, limit, and total count.
 
 Network `10.5.67` may include a `TELEPORT` pseudo-client without a MAC address
 in the bounded history response. Because history reconciliation and the journal
@@ -437,17 +472,17 @@ Rollback is failure-domain specific:
 
 ## MCP tools
 
-The server exposes 36 tools:
+The server exposes 37 tools:
 
 - Discovery, snapshots, and fleet data: `unifi_get_capabilities`, `unifi_get_site_snapshot`, `unifi_site_manager`, `unifi_isp_metrics`
-- Grouped reads: `unifi_sites`, `unifi_devices`, `unifi_clients`, `unifi_client_groups`, `unifi_wifi_diagnostics`, `unifi_alerts`, `unifi_networks`, `unifi_wifi`, `unifi_hotspot`, `unifi_firewall`, `unifi_acl`, `unifi_switching`, `unifi_dns`, `unifi_traffic_lists`, `unifi_supporting_resources`
+- Grouped reads: `unifi_sites`, `unifi_devices`, `unifi_clients`, `unifi_client_traffic`, `unifi_client_groups`, `unifi_wifi_diagnostics`, `unifi_alerts`, `unifi_networks`, `unifi_wifi`, `unifi_hotspot`, `unifi_firewall`, `unifi_acl`, `unifi_switching`, `unifi_dns`, `unifi_traffic_lists`, `unifi_supporting_resources`
 - Contract-defined read escape hatch: `unifi_read_operation`
 - Client journal: `unifi_collect_client_observations`, `unifi_client_changes`, `unifi_client_observation_history`, `unifi_client_journal_health`, `unifi_recover_client_journal`
 - Domain previews: `unifi_preview_device_change`, `unifi_preview_client_change`, `unifi_preview_network_change`, `unifi_preview_wifi_change`, `unifi_preview_hotspot_change`, `unifi_preview_firewall_change`, `unifi_preview_acl_change`, `unifi_preview_dns_change`, `unifi_preview_traffic_list_change`
 - Contract-defined write preview: `unifi_preview_operation`
 - Confirmed apply: `unifi_apply_change`
 
-Official read tools support the contract's offset, limit, and filter parameters. Page responses include `_connector.truncated`; when true, request another page. `unifi_clients` actions `list` and `get` retain the official connected-client semantics; action `history` is the distinct bounded private classification described above and accepts `historyHours`, `offset`, and `limit`. `unifi_client_groups` supports `list` and `audit`; `includeMembers=true` includes projected configured member MAC addresses. The group audit remains connected-only and does not silently become a history audit. `unifi_wifi_diagnostics` accepts bounded client/radio limits plus an optional exact client MAC and returns nullable, version-aware RF and DHCP/APIPA projections from fixed private resources. `unifi_alerts` accepts a local 1-50 limit over the first System Logs page and reports the controller's page and total counts. Set `includeRead=false` to retain only records whose direct controller status is `NEW`; no meaning is inferred for other status values. Read responses also include observation/source metadata when their response shape can carry it. Device-detail and client responses include `_connector.contract` and `_connector.knownLimitations` when response coverage needs explanation. A site is auto-selected only if exactly one exists or `UNIFI_DEFAULT_SITE_ID` is configured.
+Official read tools support the contract's offset, limit, and filter parameters. Page responses include `_connector.truncated`; when true, request another page. `unifi_clients` actions `list` and `get` retain the official connected-client semantics; action `history` is the distinct bounded private classification described above and accepts `historyHours`, `offset`, and `limit`. `unifi_client_traffic` ranks a bounded official/private current-client join by nullable received, transmitted, or combined byte counters; it does not normalize source-relative rx/tx into upload/download or expose unverified rates. `unifi_client_groups` supports `list` and `audit`; `includeMembers=true` includes projected configured member MAC addresses. The group audit remains connected-only and does not silently become a history audit. `unifi_wifi_diagnostics` accepts bounded client/radio limits plus an optional exact client MAC and returns nullable, version-aware RF and DHCP/APIPA projections from fixed private resources. `unifi_alerts` accepts a local 1-50 limit over the first System Logs page and reports only validated, bounded integer page and total counts. Set `includeRead=false` to retain only records whose direct controller status is `NEW`; no meaning is inferred for other status values. Read responses also include observation/source metadata when their response shape can carry it. Device-detail and client responses include `_connector.contract` and `_connector.knownLimitations` when response coverage needs explanation. A site is auto-selected only if exactly one exists or `UNIFI_DEFAULT_SITE_ID` is configured.
 
 `unifi_site_manager` actions are `hosts`, `host`, `sites`, and `devices`. List actions use `pageSize` from 1 to 500 and return an opaque `pagination.continuation`; pass it back as `nextToken` for the next call. `host` requires `hostId`; `devices` optionally filters by host. `unifi_isp_metrics` accepts interval `5m` or `1h`, duration `24h` for 5-minute metrics, duration `7d` or `30d` for hourly metrics, or explicit RFC3339 timestamps. Optional targeted queries accept an array of `{ hostId, siteId, beginTimestamp?, endTimestamp? }`.
 
@@ -478,9 +513,9 @@ can require conservative approval.
 
 ## OpenAPI contract
 
-The repository vendors Ubiquiti Network OpenAPI `10.5.67`, matching the active Network application, with 41 GET and 32 write operations. At startup the connector reads `/v1/info` and first probes the authenticated controller document at `/proxy/network/api-docs/integration.json`, followed by older integration-relative contract locations. Controller contract responses are capped at 2 MiB. It uses a controller contract only when its version matches the live Network application; otherwise it remains restricted to the reviewed embedded contract. Capabilities, read-response metadata, snapshots, and `doctor` report the machine-readable contract status.
+The repository vendors Ubiquiti Network OpenAPI `10.5.67`, matching the active Network application, with 41 GET and 32 write operations. At startup the connector reads `/v1/info` and first probes the authenticated controller document at `/proxy/network/api-docs/integration.json`, followed by older integration-relative contract locations. Controller contract responses are capped at 2 MiB. A controller document is used only when both versions are non-empty and exactly match the live Network application, and then only to supplement response-schema capability detection for the same reviewed operation ID, method, and path. Response-schema graphs are limited to 4,096 reachable schema nodes and 16,384 traversal states per capability query; malformed or excessive graphs fall back to the embedded contract. Operation IDs, methods, paths, parameters, and request schemas always come from the reviewed embedded contract. Request objects reject undeclared properties by default, while annotation-only schema placeholders remain available for discriminator refinement and explicit JSON null values are validated against nullable schema semantics. Capabilities, read-response metadata, snapshots, and `doctor` report the machine-readable contract status.
 
-The `10.5.67` review found the same 73 method/path operations and 379 component schemas as `10.4.57`. Its semantic schema changes correct recursive filter-expression references and add the `SHELLY` classification; it does not add official client history, client groups, System Logs, device/client notes, custom switch-port labels, STP details, or the RF/DHCP fields used by Wi-Fi diagnostics. Those adapters therefore remain private, opt-in, projected, and provenance-labelled. The connector detects adopted-device label and STP capabilities from response-schema paths instead of hard-coding a version. Missing fields are reported with `source`, `scope`, `resolutionStatus`, `resolvedBy`, and `stillMissing` metadata. Successful legacy enrichment resolves labels and the projected STP-related fields separately under `_connector.legacyReadEnrichment`; the normalized UniFi UI Edge/Participant role remains explicitly unresolved.
+The `10.5.67` review found the same 73 method/path operations and 379 component schemas as `10.4.57`. Its semantic schema changes correct recursive filter-expression references and add the `SHELLY` classification; it does not add official client history or traffic counters, client groups, System Logs, device/client notes, switch-port VLAN/profile/watt telemetry, custom switch-port labels, STP details, or the RF/DHCP fields used by Wi-Fi diagnostics. Those adapters therefore remain private, opt-in, projected, and provenance-labelled. The connector detects adopted-device label and STP capabilities from response-schema paths instead of hard-coding a version. Missing fields are reported with `source`, `scope`, `resolutionStatus`, `resolvedBy`, and `stillMissing` metadata. Successful legacy enrichment resolves labels and the projected STP-related fields separately under `_connector.legacyReadEnrichment`; the normalized UniFi UI Edge/Participant role remains explicitly unresolved.
 
 Refresh is an explicit review step:
 
@@ -498,6 +533,64 @@ with stable generic UniFi server templates, and preserves existing key order
 before vendoring the document. Supply only a reviewed official contract. Do
 not silently refresh the embedded contract at runtime.
 
+## GitHub Container Registry
+
+The [container publishing workflow](../.github/workflows/publish-container.yml)
+publishes multi-architecture images to
+`ghcr.io/webbman-nyc/unifi-mcp`. It is a publishing boundary only: it does not
+deploy the image, restart a connector, update Compose, or replace the separate
+ARM64 private-registry path in `scripts/publish.sh`.
+
+A published stable GitHub release must use `vMAJOR.MINOR.PATCH` or
+`MAJOR.MINOR.PATCH`, match both declared application versions, and point to a
+commit on the default branch. A successful release publishes the exact version,
+the full source commit as `sha-<40 hexadecimal characters>`, and `latest`.
+Manual workflow dispatches publish only the full-commit `sha-*` tag, so a test
+build cannot move a release tag. Pre-releases are intentionally skipped.
+
+Every run restores locked dependencies, verifies formatting, runs the full
+Release test suite, and checks the Git diff before it signs in to GHCR. The
+workflow then builds `linux/amd64` and `linux/arm64`, publishes BuildKit
+provenance plus an SBOM with the image, and verifies both platform manifests and
+the repository-linking OCI source label by digest. GitHub Actions and the QEMU
+and BuildKit helper images are pinned to immutable revisions. The job receives
+only `contents: read` and `packages: write`; it authenticates with the
+run-scoped `GITHUB_TOKEN`, not a stored registry password.
+
+The first package publication is private. An authorized consumer can create a
+classic GitHub personal access token with only `read:packages` and avoid putting
+it in Compose, source control, image layers, or shell arguments:
+
+```sh
+printf '%s' "${GHCR_TOKEN}" | docker login ghcr.io -u GITHUB_USER --password-stdin
+docker pull ghcr.io/webbman-nyc/unifi-mcp:1.3.0
+unset GHCR_TOKEN
+```
+
+For deployment and rollback, prefer the immutable digest recorded in the
+workflow summary:
+
+```sh
+docker pull ghcr.io/webbman-nyc/unifi-mcp@sha256:<published-digest>
+```
+
+After the first successful publication, verify under the organization's
+**Packages** page that the package is linked to this repository, inherits only
+the intended repository access, and grants this Actions repository write
+access. Protect stable release tags with an appropriate repository ruleset so
+only intended release operators can create or update them. Package visibility
+is an operator decision in **Package settings**.
+Public GHCR images can be pulled anonymously, but changing a package from
+private to public is irreversible and exposes the compiled application and its
+embedded contract even though the source repository remains private. The
+repository currently does not declare a project license, so do not treat public
+image availability as a license grant.
+
+GitHub-native artifact attestations are not enabled because private-repository
+attestations require GitHub Enterprise Cloud. The registry-native BuildKit
+provenance and SBOM remain attached to the image; revisit native attestations if
+the repository becomes public or the organization plan changes.
+
 ## Codex registration
 
 ### Stable local publish
@@ -508,7 +601,7 @@ A worktree build path disappears when that worktree is removed. Before cleaning 
 ./scripts/publish-local.sh
 ```
 
-The script restores locked dependencies, runs the complete Release test suite, publishes into a new versioned directory under `~/source/personal/mcp-connectors/unifi-mcp/releases/`, and atomically switches the `current` symlink only after all prior steps succeed. It never copies `.env` or resolved secrets. Existing releases remain available for manual rollback; the script does not prune them.
+The script restores locked dependencies, runs the complete Release test suite, publishes into a new versioned directory under `~/source/personal/mcp-connectors/unifi-mcp/releases/`, and atomically switches the `current` symlink only after all prior steps succeed. Symlink activation supports BSD/macOS and GNU `mv` semantics. It never copies `.env` or resolved secrets. Existing releases remain available for manual rollback; the script does not prune them.
 
 An alternate absolute destination may be supplied as the first argument. The default durable entrypoint is:
 
