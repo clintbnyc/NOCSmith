@@ -6,7 +6,7 @@ set -euo pipefail
 
 TAG="${1:-latest}"
 IMAGE_NAME="unifi-mcp"
-REGISTRY="docker-registry.nutria-newton.ts.net:443"
+REGISTRY="docker-registry.webbman.nyc:443"
 FULL_IMAGE="${REGISTRY}/${IMAGE_NAME}:${TAG}"
 REPOSITORY_ROOT="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)"
 
