@@ -8,7 +8,7 @@ Please report suspected vulnerabilities privately.
 ## Reporting a vulnerability
 
 Use the repository's
-[private vulnerability reporting form](https://github.com/Webbman-nyc/unifi-mcp/security/advisories/new).
+[private vulnerability reporting form](https://github.com/clintbnyc/NOCSmith/security/advisories/new).
 Do not open a public issue for an unpatched vulnerability and do not include
 real API keys, bearer tokens, private keys, client data, journal contents, or
 other sensitive deployment information in a report.

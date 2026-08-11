@@ -15,7 +15,7 @@ RUN dotnet publish src/UnifiMcp/UnifiMcp.csproj \
 
 FROM mcr.microsoft.com/dotnet/aspnet:10.0.10-noble-chiseled-extra@sha256:f9bd6be9b5ab75b8196bff0f0972580edaea7fa8ca04e6ef530950e33caee5b0
 
-LABEL org.opencontainers.image.source="https://github.com/Webbman-nyc/unifi-mcp"
+LABEL org.opencontainers.image.source="https://github.com/clintbnyc/NOCSmith"
 LABEL org.opencontainers.image.title="NOCsmith by Clint"
 LABEL org.opencontainers.image.description="Network intelligence, forged safely."
 

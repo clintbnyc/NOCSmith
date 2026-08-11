@@ -118,7 +118,7 @@ The release workflow publishes stable images to GitHub Container Registry for
 both `linux/amd64` and `linux/arm64`:
 
 ```sh
-docker pull ghcr.io/webbman-nyc/unifi-mcp:1.3.0
+docker pull ghcr.io/clintbnyc/nocsmith:1.3.0
 ```
 
 The package is private by default. Authorized consumers can sign in with a
@@ -184,9 +184,10 @@ limits, retention, provenance, and recovery behavior.
 
 ## Compatibility
 
-NOCsmith currently retains `unifi-mcp` as its executable, MCP server ID,
-container/image name, repository slug, and deployment namespace. Existing
-configuration and automation therefore continue to work without migration.
+NOCsmith uses `nocsmith` for its public MCP identity and GHCR image. The local
+checkout path, `UNIFI_*` configuration variables, legacy executable/assembly
+names, and existing deployment paths remain `unifi-mcp` compatibility
+identifiers until a separately planned runtime migration.
 
 - Runtime: .NET 10
 - MCP transports: stdio and stateless Streamable HTTP

@@ -10,7 +10,7 @@ permissions:
   packages: write
 
 env:
-  IMAGE_NAME: ghcr.io/webbman-nyc/unifi-mcp
+  IMAGE_NAME: ghcr.io/clintbnyc/nocsmith
 
 jobs:
   publish:
@@ -112,7 +112,7 @@ jobs:
             type=semver,pattern={{version}},value=${{ github.event.release.tag_name }},enable=${{ github.event_name == 'release' }}
             type=raw,value=latest,enable=${{ github.event_name == 'release' }}
           labels: |
-            org.opencontainers.image.source=https://github.com/Webbman-nyc/unifi-mcp
+            org.opencontainers.image.source=https://github.com/clintbnyc/NOCSmith
             org.opencontainers.image.title=NOCsmith by Clint
             org.opencontainers.image.description=Network intelligence, forged safely.
 
@@ -152,8 +152,8 @@ jobs:
           ' <<<"${manifest_json}" >/dev/null
 
           jq -e '
-            ."linux/amd64".config.Labels."org.opencontainers.image.source" == "https://github.com/Webbman-nyc/unifi-mcp" and
-            ."linux/arm64".config.Labels."org.opencontainers.image.source" == "https://github.com/Webbman-nyc/unifi-mcp"
+            ."linux/amd64".config.Labels."org.opencontainers.image.source" == "https://github.com/clintbnyc/NOCSmith" and
+            ."linux/arm64".config.Labels."org.opencontainers.image.source" == "https://github.com/clintbnyc/NOCSmith"
           ' <<<"${image_json}" >/dev/null
 
           {

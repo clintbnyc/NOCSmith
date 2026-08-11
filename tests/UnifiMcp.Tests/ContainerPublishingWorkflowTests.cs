@@ -57,6 +57,10 @@ public sealed class ContainerPublishingWorkflowTests
             "type=raw,value=latest,enable=${{ github.event_name == 'release' }}",
             workflow);
         Assert.Contains("platforms: linux/amd64,linux/arm64", workflow);
+        Assert.Contains("IMAGE_NAME: ghcr.io/clintbnyc/nocsmith", workflow);
+        Assert.Contains(
+            "org.opencontainers.image.source=https://github.com/clintbnyc/NOCSmith",
+            workflow);
         Assert.Contains("provenance: mode=max", workflow);
         Assert.Contains(
             "sbom: generator=docker/buildkit-syft-scanner@sha256:" +

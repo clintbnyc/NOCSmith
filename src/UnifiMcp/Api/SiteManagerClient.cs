@@ -54,7 +54,7 @@ public sealed class SiteManagerClient : ISiteManagerClient, IDisposable
         _httpClient = handler is null ? new HttpClient() : new HttpClient(handler, disposeHandler: true);
         _httpClient.BaseAddress = new Uri(UnifiConfiguration.SiteManagerBaseUrl);
         _httpClient.Timeout = configuration.RequestTimeout;
-        _httpClient.DefaultRequestHeaders.UserAgent.Add(new ProductInfoHeaderValue("unifi-mcp", "1.0"));
+        _httpClient.DefaultRequestHeaders.UserAgent.Add(new ProductInfoHeaderValue("nocsmith", "1.0"));
         _httpClient.DefaultRequestHeaders.Accept.Add(new MediaTypeWithQualityHeaderValue("application/json"));
     }
 
