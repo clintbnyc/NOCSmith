@@ -475,11 +475,10 @@ The package begins private. Its repository linkage, inherited access, Actions
 access, and visibility require operator verification after first publication.
 Making the package public is irreversible and exposes compiled assemblies and
 the embedded contract independently of source-repository visibility; the
-repository does not currently declare a project license. GitHub-native artifact
-attestations are unavailable for this private repository on the current plan,
-so BuildKit registry provenance is used without overstating it as a GitHub
-identity attestation. Deployments should pin the published digest when rollback
-or reproducibility matters rather than relying on the mutable `latest` tag.
+repository does not currently declare a project license. The workflow uses
+BuildKit registry provenance without overstating it as a GitHub identity
+attestation. Deployments should pin the published digest when rollback or
+reproducibility matters rather than relying on the mutable `latest` tag.
 
 Supply-chain review should cover unexpected lockfile changes, package/build
 script execution, digest updates, OpenAPI semantic changes, dirty-source

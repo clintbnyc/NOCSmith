@@ -118,7 +118,7 @@ The release workflow publishes stable images to GitHub Container Registry for
 both `linux/amd64` and `linux/arm64`:
 
 ```sh
-docker pull ghcr.io/webbman-nyc/unifi-mcp:1.3.0
+docker pull ghcr.io/clintbnyc/unifi-mcp:1.3.0
 ```
 
 The package is private by default. Authorized consumers can sign in with a
