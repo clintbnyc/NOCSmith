@@ -16,7 +16,7 @@ boundary, or materially different secret-handling path.
 
 ## Overview
 
-NOCsmith, whose stable technical runtime identifier is `unifi-mcp`, is a private
+NOCsmith, whose legacy compatibility identifiers include `unifi-mcp`, is a private
 .NET 10 Model Context Protocol connector for a UniFi Network controller and,
 optionally, the UniFi Site Manager stable-v1 API. It turns MCP tool calls into:
 

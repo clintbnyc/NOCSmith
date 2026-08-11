@@ -537,7 +537,7 @@ not silently refresh the embedded contract at runtime.
 
 The [container publishing workflow](../.github/workflows/publish-container.yml)
 publishes multi-architecture images to
-`ghcr.io/clintbnyc/unifi-mcp`. It is a publishing boundary only: it does not
+`ghcr.io/clintbnyc/nocsmith`. It is a publishing boundary only: it does not
 deploy the image, restart a connector, update Compose, or replace the separate
 ARM64 private-registry path in `scripts/publish.sh`.
 
@@ -563,7 +563,7 @@ it in Compose, source control, image layers, or shell arguments:
 
 ```sh
 printf '%s' "${GHCR_TOKEN}" | docker login ghcr.io -u GITHUB_USER --password-stdin
-docker pull ghcr.io/clintbnyc/unifi-mcp:1.3.0
+docker pull ghcr.io/clintbnyc/nocsmith:1.3.0
 unset GHCR_TOKEN
 ```
 
@@ -571,7 +571,7 @@ For deployment and rollback, prefer the immutable digest recorded in the
 workflow summary:
 
 ```sh
-docker pull ghcr.io/clintbnyc/unifi-mcp@sha256:<published-digest>
+docker pull ghcr.io/clintbnyc/nocsmith@sha256:<published-digest>
 ```
 
 After the first successful publication, verify under the organization's

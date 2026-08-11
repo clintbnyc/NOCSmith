@@ -10,7 +10,7 @@ permissions:
   packages: write
 
 env:
-  IMAGE_NAME: ghcr.io/clintbnyc/unifi-mcp
+  IMAGE_NAME: ghcr.io/clintbnyc/nocsmith
 
 jobs:
   publish:
