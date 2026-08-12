@@ -1,0 +1,39 @@
+name: Pull request validation
+
+on:
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: pull-request-validation-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  validate:
+    name: validate
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+
+    steps:
+      - name: Check out the pull request
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Set up .NET
+        uses: actions/setup-dotnet@a98b56852c35b8e3190ac28c8c2271da59106c68 # v6.0.0
+
+      - name: Restore locked dependencies
+        run: dotnet restore UnifiMcp.slnx --locked-mode
+
+      - name: Verify formatting
+        run: dotnet format UnifiMcp.slnx --no-restore --verify-no-changes
+
+      - name: Run the Release test suite
+        run: dotnet test UnifiMcp.slnx --configuration Release --no-restore
+
+      - name: Check the source diff
+        run: git diff --check
