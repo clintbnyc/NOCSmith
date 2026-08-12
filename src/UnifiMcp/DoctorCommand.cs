@@ -80,6 +80,7 @@ public static class DoctorCommand
             var result = new JsonObject
             {
                 ["ok"] = true,
+                ["nocsmith"] = DescribeNocsmith(),
                 ["baseUrl"] = configuration.BaseUri.ToString().TrimEnd('/'),
                 ["apiKeyInjected"] = !string.IsNullOrWhiteSpace(configuration.ApiKey),
                 ["tlsValidation"] = "system trust and hostname validation",
@@ -125,6 +126,13 @@ public static class DoctorCommand
             return 1;
         }
     }
+
+    internal static JsonObject DescribeNocsmith() =>
+        new()
+        {
+            ["version"] = ApplicationIdentity.Version,
+            ["informationalVersion"] = ApplicationIdentity.InformationalVersion
+        };
 
     private static async Task<JsonObject> ProbeSiteManagerAsync(
         UnifiConfiguration configuration,
