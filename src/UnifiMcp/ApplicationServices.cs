@@ -63,7 +63,7 @@ public static class ApplicationServices
         {
             Name = "nocsmith",
             Title = "NOCsmith by Clint",
-            Version = "1.3.0",
+            Version = ApplicationIdentity.Version,
             Description = "Security-first UniFi Network intelligence for inventory, diagnostics, history, and confirmation-bound changes."
         };
         options.ServerInstructions =

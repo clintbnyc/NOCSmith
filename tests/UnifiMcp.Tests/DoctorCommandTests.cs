@@ -6,6 +6,20 @@ namespace UnifiMcp.Tests;
 public sealed class DoctorCommandTests
 {
     [Fact]
+    public void Describe_nocsmith_reports_the_running_build_identity()
+    {
+        var result = DoctorCommand.DescribeNocsmith();
+
+        Assert.Equal(
+            ApplicationIdentity.Version,
+            result["version"]?.GetValue<string>());
+        Assert.Equal(
+            ApplicationIdentity.InformationalVersion,
+            result["informationalVersion"]?.GetValue<string>());
+        Assert.NotEqual("unknown", ApplicationIdentity.Version);
+    }
+
+    [Fact]
     public void Count_private_client_records_accepts_a_root_array()
     {
         var response = new JsonArray
